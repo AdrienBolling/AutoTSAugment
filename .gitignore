@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+
+# Tools
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+.ty_cache/
+
+# Runs and data (DVC tracks keeper checkpoints; everything else is scratch)
+outputs/
+multirun/
+mlruns/
+runs/
+checkpoints/
+data/
+!data/.gitkeep
+*.log
+
+# DVC local override
+.dvc/config.local
+.dvc/tmp/
+.dvc/cache/
+
+# Claude worktrees
+.claude/worktrees/
+
+# Editors
+.idea/
+.vscode/
+*.swp

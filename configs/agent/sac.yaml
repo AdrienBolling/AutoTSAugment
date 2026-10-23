@@ -1,0 +1,15 @@
+# Soft Actor-Critic from TorchRL. Off-policy: every expensive transition is reused.
+_target_: autotsaugment.components.agents.torchrl.sac.SACAgent
+device: ${device}
+config:
+  _target_: autotsaugment.components.agents.torchrl.sac.SACAgentConfig
+  episodes: 100
+  hidden_sizes: [256, 256]
+  learning_rate: 3e-4
+  gamma: 0.99
+  tau: 0.005
+  batch_size: 256
+  replay_capacity: 100000
+  warmup_steps: 200      # random actions before learning starts
+  updates_per_step: 1
+  target_entropy: auto

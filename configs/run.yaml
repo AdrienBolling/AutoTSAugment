@@ -1,0 +1,21 @@
+# A run is one experiment, one agent, one environment. Override any leaf on the command line:
+#   uv run autotsaugment-run experiment=train_agent agent=sac env.config.episode.epochs=20
+defaults:
+  - _self_            # first, so a group file can override a leaf of this file
+  - env: default
+  - agent: fixed_uniform
+  - tracker: mlflow
+  - experiment: smoke # last, so an experiment can override the groups above it
+
+seed: 0
+device: cuda
+output_dir: ${hydra:runtime.output_dir}
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
+  job:
+    chdir: false

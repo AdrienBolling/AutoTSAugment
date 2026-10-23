@@ -1,0 +1,19 @@
+# The environment: K lockstep tsmodels, one augmentation method, one benchmark.
+defaults:
+  - tsmodel: timestral_bare
+  - augmentation: kernelsynth
+  - benchmark: gifteval_small
+  - featurizer: stats
+  - reward: improvement
+  - _self_
+
+_target_: autotsaugment.components.env.curriculum.CurriculumEnv
+device: ${device}
+config:
+  _target_: autotsaugment.components.env.curriculum.CurriculumEnvConfig
+  episode:
+    epochs: 50            # E: steps per episode
+    series_per_epoch: 4096  # N: synthetic series per step
+    batch_envs: 4         # K: tsmodels trained in lockstep
+  reward_subset_per_dataset: 128  # reward windows scored per step and dataset (null = all)
+  score_batch_size: 1024

@@ -1,0 +1,7 @@
+# Four observation groups: progress, train_stats, reward_vector, action_history.
+_target_: autotsaugment.components.env.featurizers.StatsFeaturizer
+config:
+  _target_: autotsaugment.components.env.featurizers.StatsFeaturizerConfig
+  loss_window: 5          # epochs used for the loss slope
+  action_ema: 0.5         # weight of the newest action in the action history
+  normalize: true         # running mean/std per feature

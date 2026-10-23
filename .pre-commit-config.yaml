@@ -1,0 +1,38 @@
+# Enforcement chain for this repo.
+#   uv run pre-commit install          # installs pre-commit + commit-msg + pre-push hooks
+#   uv run pre-commit run --all-files  # every pre-commit hook, on every file
+# Never bypass with --no-verify.
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
+default_stages: [pre-commit]
+minimum_pre_commit_version: "4.0.0"
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1000] # checkpoints and datasets go through DVC, not git
+
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.12.9 # keep equal to the local uv version
+    hooks:
+      - id: uv-lock # fails the commit if uv.lock is out of date with pyproject.toml
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.2 # keep equal to the ruff pin in [dependency-groups].dev
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/astral-sh/ty-pre-commit
+    rev: v0.0.91 # keep equal to the ty pin in [dependency-groups].dev
+    hooks:
+      - id: ty
+        args: [--frozen]

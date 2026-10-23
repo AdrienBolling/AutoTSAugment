@@ -1,0 +1,12 @@
+# @package _global_
+# Evaluate several saved or training-free policies on the comparison set, same seeds, same
+# budget. The headline table of v1: fixed_uniform vs random vs cmaes vs sac.
+experiment:
+  _target_: autotsaugment.components.experiments.compare.CompareExperiment
+  name: compare
+  eval_seeds: [0, 1, 2]
+  policies:
+    uniform:
+      agent: fixed_uniform
+    random:
+      agent: random

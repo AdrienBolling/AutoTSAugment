@@ -1,0 +1,6 @@
+# Baseline: a uniform random action every step. No training.
+_target_: autotsaugment.components.agents.random.RandomAgent
+device: ${device}
+config:
+  _target_: autotsaugment.components.agents.random.RandomAgentConfig
+  episodes: 0

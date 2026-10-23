@@ -1,0 +1,7 @@
+_target_: autotsaugment.components.fakes.FakeBenchmark
+device: ${device}
+config:
+  _target_: autotsaugment.components.fakes.FakeBenchmarkConfig
+  n_datasets: 3
+  reward_windows_per_dataset: 32
+  comparison_windows_per_dataset: 32

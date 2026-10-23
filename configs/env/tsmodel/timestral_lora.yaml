@@ -1,0 +1,21 @@
+# Timestral-5M pretrained weights, LoRA adapters trained every episode.
+_target_: autotsaugment.components.tsmodel.timestral.TimestralLora
+_partial_: true
+device: ${device}
+episode_epochs: ${env.config.episode.epochs}
+config:
+  _target_: autotsaugment.components.tsmodel.timestral.TimestralLoraConfig
+  checkpoint: mistralai/Timestral-5M
+  context_length: 768
+  horizon_length: 256
+  batch_size: 128
+  learning_rate: 5e-4
+  weight_decay: 0.0
+  grad_clip: 1.0
+  mixed_precision: true
+  compile: false
+  lora_rank: 16
+  lora_alpha: 32
+  lora_dropout: 0.0
+  lora_targets: [wQKV, wO, w12, w3]
+  fully_trainable: [head, representation]

@@ -1,0 +1,11 @@
+# KernelSynth (Chronos, Ansari et al. 2024) with a batched GPU Gaussian-process sampler.
+_target_: autotsaugment.components.augmentation.kernelsynth.KernelSynth
+device: ${device}
+config:
+  _target_: autotsaugment.components.augmentation.kernelsynth.KernelSynthConfig
+  series_length: 1024
+  max_kernels: 5        # 1..5 kernels per series, drawn with replacement
+  logit_bound: 4.0      # action logits live in [-bound, bound]; zeros = Chronos recipe
+  jitter: 1.0e-4        # added to the Gram diagonal before Cholesky
+  max_jitter_retries: 3 # jitter x10 per retry on a failed factorization
+  chunk_size: 256       # series factorized per batched Cholesky call

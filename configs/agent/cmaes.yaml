@@ -1,0 +1,8 @@
+# Control: CMA-ES over one static action held for the whole episode.
+_target_: autotsaugment.components.agents.cmaes.CMAESAgent
+device: ${device}
+config:
+  _target_: autotsaugment.components.agents.cmaes.CMAESAgentConfig
+  episodes: 40          # each episode evaluates K candidates (one per lockstep env)
+  sigma0: 1.0
+  population: null      # null = K * ceil(default_popsize / K)

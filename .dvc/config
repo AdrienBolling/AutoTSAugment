@@ -1,0 +1,4 @@
+[core]
+    remote = store
+['remote "store"']
+    url = ssh://gourmet@gourmetdesk/home/gourmet/model-store

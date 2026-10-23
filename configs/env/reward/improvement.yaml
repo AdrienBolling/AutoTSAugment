@@ -1,0 +1,7 @@
+# r_t = agg_{t-1} - agg_t (+ weighted training-quality terms, zero by default).
+_target_: autotsaugment.components.env.rewards.ImprovementReward
+config:
+  _target_: autotsaugment.components.env.rewards.ImprovementRewardConfig
+  scale: 1.0
+  loss_variance_weight: 0.0
+  loss_slope_weight: 0.0

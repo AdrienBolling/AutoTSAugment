@@ -1,0 +1,162 @@
+[project]
+name = "autotsaugment"
+version = "0.1.0"
+description = "RL agent that steers synthetic time-series generation to train a forecaster."
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+license = "MIT"
+authors = [{ name = "Adrien Bolling", email = "bolling.adrien@gmail.com" }]
+dependencies = [
+  "torch>=2.14,<3",
+  "timestral",
+  "torchrl>=0.14,<0.15",
+  "tensordict>=0.14.3,<0.15",
+  "gymnasium>=1.4,<2",
+  "peft>=0.21,<0.22",
+  "hydra-core>=1.3.2,<1.4",
+  "omegaconf>=2.3,<2.4",
+  "pydantic>=2.14,<3",
+  "jaxtyping>=0.3.11,<0.4",
+  "beartype>=0.23,<0.24",
+  "numpy>=2,<3",
+  "pyarrow>=18",
+  "huggingface-hub>=0.35",
+  "safetensors>=0.4",
+  "mlflow>=3.17,<4",
+  "cma>=4,<5",
+]
+
+[project.scripts]
+autotsaugment-run = "autotsaugment.cli:main"
+
+[project.urls]
+Repository = "https://github.com/AdrienBolling/AutoTSAugment"
+
+[dependency-groups]
+dev = [
+  "ruff==0.17.2",
+  "ty==0.0.91",
+  "pytest>=9,<10",
+  "pytest-timeout>=2.4",
+  "pre-commit>=4.7",
+]
+
+[tool.uv.sources]
+# Inference-only architecture code, Apache 2.0. Pinned to the release commit of 2026-10-15.
+timestral = { git = "https://github.com/mistralai/timestral.git", rev = "a534bdbd244d64f3d9d743f46c7bf6fc330ed4ff" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/autotsaugment"]
+
+# ---------------------------------------------------------------------------
+# pytest. GPU and network tests are opt-in: `uv run pytest -m gpu`.
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers -m 'not gpu and not network and not slow'"
+markers = [
+  "gpu: needs a CUDA device",
+  "network: downloads data or weights",
+  "slow: long-running test",
+]
+timeout = 300
+filterwarnings = [
+  "error::DeprecationWarning:autotsaugment",
+]
+
+# ---------------------------------------------------------------------------
+# ruff: lint + format. Rule set copied from the tslake repository: select ALL,
+# ignore explicitly, one comment per ignored rule. Inline suppressions use
+# `# noqa: RULE  # reason: ...` and need explicit user authorization.
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests", "scripts"]
+extend-exclude = ["*.ipynb"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+  ### Modules
+  "COM",    # trailing commas: the formatter owns them
+  "DJ",     # django
+  "EXE",    # executable flags
+  "T10",    # debugger
+  "TID",    # tidy imports
+  "TD",     # TODO rules
+
+  ### Specific rules
+  "E501",   # line too long: ruff-format owns line wrapping
+  "FIX002", # TODO present
+  "D104",   # no public docstring in package __init__
+  "D203",   # blank line before class docstring (conflicts with D211)
+  "D213",   # multi-line summary on second line (conflicts with D212)
+  "D107",   # __init__ docstring: Google style documents Args in the class docstring
+  "ANN401", # Any is legitimate for untyped payloads (Hydra, TorchRL)
+  "F722",   # forward annotation syntax error: jaxtyping shape strings
+  "RUF012", # mutable class attributes without ClassVar
+  "SIM118", # `key in dict.keys()`: conflicts when iterating over keys
+  "CPY",    # copyright headers: not used in this repository
+  "N803",   # math-style argument names (K, X)
+  "N806",   # math-style variable names
+  "PLR0913", # many keyword-only arguments are normal for configs and trainers
+  "FBT001", # boolean positional flags such as `deterministic` are idiomatic in RL APIs
+  "FBT002", # same, with a default
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["E402", "F401"]  # re-exports
+"tests/**/*.py" = [
+  "S101",    # asserts
+  "ANN201",  # no return annotation on tests
+  "NPY002",  # legacy numpy random API
+  "PLR2004", # magic values
+  "RUF043",  # regex patterns in pytest.raises
+  "INP001",  # tests/ is not a package
+  "D",       # test names are the documentation
+  "SLF001",  # tests may inspect private members
+  "ARG",     # fakes ignore arguments
+]
+"scripts/**/*.py" = ["INP001", "T201"]
+
+[tool.ruff.lint.flake8-type-checking]
+# beartype resolves annotations at runtime: never move imports into TYPE_CHECKING blocks.
+runtime-evaluated-base-classes = ["pydantic.BaseModel"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["autotsaugment"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.flake8-annotations]
+suppress-dummy-args = true
+mypy-init-return = true
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# ---------------------------------------------------------------------------
+# ty: type checking. Accepted suppression form: `# ty: ignore[rule]  # reason: ...`
+# (bare `# ty: ignore` is an error), only with explicit user authorization.
+# ---------------------------------------------------------------------------
+[tool.ty.environment]
+python-version = "3.13"
+
+[tool.ty.src]
+include = ["src", "tests", "scripts"]
+
+[tool.ty.rules]
+possibly-unresolved-reference = "error"
+blanket-ignore-comment = "error"
+ignore-comment-unknown-rule = "error"
+invalid-ignore-comment = "error"
+deprecated = "warn"
+
+[tool.ty.terminal]
+error-on-warning = true

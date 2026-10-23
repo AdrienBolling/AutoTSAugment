@@ -1,0 +1,10 @@
+_target_: autotsaugment.components.fakes.FakeTSModel
+_partial_: true
+device: ${device}
+episode_epochs: ${env.config.episode.epochs}
+config:
+  _target_: autotsaugment.components.fakes.FakeTSModelConfig
+  context_length: 32
+  horizon_length: 8
+  batch_size: 16
+  learning_rate: 0.1

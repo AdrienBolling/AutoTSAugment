@@ -1,0 +1,4 @@
+_target_: autotsaugment.components.tracking.mlflow.MLflowTracker
+tracking_uri: mlruns
+experiment_name: ${experiment.name}
+run_name: null

@@ -1,0 +1,20 @@
+# Eight GIFT-Eval datasets, one or two per domain. Dataset ids are "<name>/<freq>".
+_target_: autotsaugment.components.data.gifteval.GiftEvalBenchmark
+device: ${device}
+config:
+  _target_: autotsaugment.components.data.gifteval.GiftEvalBenchmarkConfig
+  root: data/gifteval
+  repo_id: Salesforce/GiftEval
+  max_total_gb: 10.0
+  datasets:
+    - ett1/H                   # Energy
+    - electricity/H            # Energy
+    - jena_weather/H           # Nature
+    - car_parts_with_missing/M # Sales
+    - covid_deaths/D           # Healthcare
+    - bizitobs_l2c/H           # Web/CloudOps
+    - LOOP_SEATTLE/H           # Transport
+    - m4_hourly/H              # Econ/Fin
+  reward_windows_per_dataset: 512
+  comparison_windows_per_dataset: 512
+  reward_fraction: 0.85

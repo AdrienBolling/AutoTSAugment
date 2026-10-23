@@ -1,0 +1,5 @@
+_target_: autotsaugment.components.fakes.FakeAugmentation
+device: ${device}
+config:
+  _target_: autotsaugment.components.fakes.FakeAugmentationConfig
+  series_length: 64

@@ -1,0 +1,19 @@
+# Fake components: CPU, seconds per episode. For tests, smoke runs and agent development.
+defaults:
+  - tsmodel: fake
+  - augmentation: fake
+  - benchmark: fake
+  - featurizer: stats
+  - reward: improvement
+  - _self_
+
+_target_: autotsaugment.components.env.curriculum.CurriculumEnv
+device: ${device}
+config:
+  _target_: autotsaugment.components.env.curriculum.CurriculumEnvConfig
+  episode:
+    epochs: 5
+    series_per_epoch: 64
+    batch_envs: 2
+  reward_subset_per_dataset: 16
+  score_batch_size: 256

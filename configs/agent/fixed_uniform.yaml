@@ -1,0 +1,7 @@
+# Baseline: the Chronos recipe, every step. No training.
+_target_: autotsaugment.components.agents.fixed.FixedActionAgent
+device: ${device}
+config:
+  _target_: autotsaugment.components.agents.fixed.FixedActionAgentConfig
+  episodes: 0
+  action: null   # null = env.action_space uniform action

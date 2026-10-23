@@ -1,0 +1,13 @@
+# @package _global_
+# One short episode on the configured env with the configured agent. Must run in seconds
+# with env=fake, and in minutes with the real env. The CI integration test.
+defaults:
+  - override /env: fake
+  - override /tracker: null
+
+device: cpu
+
+experiment:
+  _target_: autotsaugment.components.experiments.smoke.SmokeExperiment
+  name: smoke
+  episodes: 1
