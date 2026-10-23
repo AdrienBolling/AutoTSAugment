@@ -14,8 +14,12 @@ config:
   grad_clip: 1.0
   mixed_precision: true
   compile: false
+  warmup_fraction: 0.05
+  min_lr_fraction: 0.1
+  patch_size: 32   # of the checkpoint: checked at startup, again after the load
+  block_size: 32
   lora_rank: 16
   lora_alpha: 32
-  lora_dropout: 0.0
+  lora_dropout: 0.0   # must be 0: dropout would draw from the global random stream
   lora_targets: [wQKV, wO, w12, w3]
   fully_trainable: [head, representation]
