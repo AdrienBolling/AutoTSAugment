@@ -69,18 +69,44 @@ def test_run_episode_without_aggregate_gives_a_nan_curve(device: torch.device):
     torch.testing.assert_close(result.final_skill, torch.ones(4, 2))
 
 
-def test_run_episode_reads_the_aggregate_from_info(device: torch.device):
-    class AggregateEnvironment(FakeEnvironment):
-        def step(self, action: torch.Tensor) -> StepResult:
-            result = super().step(action)
-            info = {**result.info, "aggregate": result.info["distance"] + 1.0}
-            return StepResult(result.observation, result.reward, result.done, info)
+class CurriculumInfoEnvironment(FakeEnvironment):
+    """The fake bandit with the ``info`` layout of the curriculum environment."""
 
-    env = AggregateEnvironment(config=make_env(device).config, device=device)
+    def step(self, action: torch.Tensor) -> StepResult:
+        result = super().step(action)
+        k, d = self.batch_size, self.config.n_datasets
+        scores = torch.arange(1.0, d + 1.0, device=self.device).expand(k, d)
+        info = {
+            **result.info,
+            "scores": scores.clone(),
+            "aggregate": result.info["distance"] + 1.0,
+            "train/loss": torch.full((k,), 0.5, device=self.device),
+            "train/n_steps": torch.full((k,), 3, dtype=torch.int64, device=self.device),
+            "action": action,
+            "reward_rows": torch.zeros((k, 5), dtype=torch.int64, device=self.device),
+        }
+        return StepResult(result.observation, result.reward, result.done, info)
+
+
+def test_run_episode_logs_the_curriculum_info(device: torch.device):
+    env = CurriculumInfoEnvironment(config=make_env(device).config, device=device)
     tracker = MemoryTracker()
     result = run_episode(env, TargetPolicy(), seed=0, tracker=tracker)
     torch.testing.assert_close(result.aggregate_curve, torch.ones(8, 4))
-    assert tracker.steps[0][1]["aggregate"] == pytest.approx(1.0)
+    metrics = tracker.steps[0][1]
+    assert set(metrics) == {
+        "reward",
+        "distance",
+        "aggregate",
+        "train/loss",
+        "train/n_steps",
+        "score/fake_0",
+        "score/fake_1",
+    }
+    assert metrics["aggregate"] == pytest.approx(1.0)
+    assert metrics["train/n_steps"] == pytest.approx(3.0)
+    assert metrics["score/fake_0"] == pytest.approx(1.0)
+    assert metrics["score/fake_1"] == pytest.approx(2.0)
 
 
 def test_run_episode_callback_sees_every_step_and_adds_metrics(device: torch.device):

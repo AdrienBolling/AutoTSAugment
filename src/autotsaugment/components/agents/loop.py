@@ -63,22 +63,35 @@ def geometric_mean(skill: Tensor) -> Tensor:
     return torch.exp(torch.log(skill).mean(dim=-1))
 
 
-def step_metrics(result: StepResult, batch_size: int) -> dict[str, Tensor]:
-    """Return the metrics of one step, as means over the k environments.
+SCORES_KEY = "scores"
+"""The ``info`` entry with the skill per dataset on the reward subset, shape ``(k, d)``."""
 
-    Every ``info`` entry with shape ``(k,)`` is logged under its own name, for example the
-    aggregate on the reward subset and the train statistics. Entries with more dimensions (per
-    dataset scores, the action) stay out of the step log.
+
+def step_metrics(
+    result: StepResult, batch_size: int, dataset_names: tuple[str, ...]
+) -> dict[str, Tensor]:
+    """Return the metrics of one step as 0-d device tensors, means over the k environments.
+
+    Every ``info`` entry with shape ``(k,)`` is logged under its own name, for example
+    ``aggregate`` and ``train/<name>``. The per-dataset scores ``info["scores"]``, shape
+    ``(k, d)``, are logged as ``score/<dataset name>``. Other entries (the action, the reward
+    rows) stay out of the step log.
 
     Args:
         result: The result of one call to ``env.step``.
         batch_size: The number of lockstep environments, k.
+        dataset_names: One name per dataset, in the order of the score columns.
     """
     metrics = {"reward": result.reward.detach().float().mean()}
     for key, value in result.info.items():
         if key in metrics or value.ndim != 1 or value.shape[0] != batch_size:
             continue
         metrics[key] = value.detach().float().mean()
+    scores = result.info.get(SCORES_KEY)
+    if scores is not None and scores.shape == (batch_size, len(dataset_names)):
+        means = scores.detach().float().mean(dim=0)
+        for index, name in enumerate(dataset_names):
+            metrics[f"score/{name}"] = means[index]
     return metrics
 
 
@@ -142,7 +155,7 @@ def run_episode(
         result = env.step(action)
         returns = returns + result.reward
         curve.append(result.info.get("aggregate", missing).detach())
-        metrics = step_metrics(result, batch_size)
+        metrics = step_metrics(result, batch_size, env.dataset_names)
         if on_step is not None:
             extra = on_step(observation, action, result)
             if extra is not None:
