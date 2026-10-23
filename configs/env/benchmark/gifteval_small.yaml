@@ -1,20 +1,31 @@
-# Eight GIFT-Eval datasets, one or two per domain. Dataset ids are "<name>/<freq>".
+# Eight GIFT-Eval datasets over the seven domains, 67.3 MB of shards. Dataset ids are
+# "<name>/<freq>". The horizon of a window lies inside its split (85% reward, 15% comparison,
+# last 10% never read), so a dataset needs room for one horizon in each split:
+#   covid_deaths/D (length 212) and car_parts_with_missing/M (length 51) have a comparison
+#   split shorter than one horizon. us_births/D and restaurant/D replace them in their domains.
+# Download first (optional, the benchmark downloads what is missing):
+#   uv run python scripts/download_benchmarks.py --plan
 _target_: autotsaugment.components.data.gifteval.GiftEvalBenchmark
 device: ${device}
 config:
   _target_: autotsaugment.components.data.gifteval.GiftEvalBenchmarkConfig
   root: data/gifteval
   repo_id: Salesforce/GiftEval
+  revision: 30841734ac5cfddbd0c3bad6d09d2b6b32becbb0  # main on 2026-10-23
   max_total_gb: 10.0
-  datasets:
-    - ett1/H                   # Energy
-    - electricity/H            # Energy
-    - jena_weather/H           # Nature
-    - car_parts_with_missing/M # Sales
-    - covid_deaths/D           # Healthcare
-    - bizitobs_l2c/H           # Web/CloudOps
-    - LOOP_SEATTLE/H           # Transport
-    - m4_hourly/H              # Econ/Fin
+  datasets:                    # reward / comparison windows kept
+    - ett1/H                   # Energy,        512 / 343
+    - electricity/H            # Energy,        512 / 512
+    - jena_weather/H           # Nature,        512 / 504
+    - restaurant/D             # Sales,         512 / 512, 14% missing values
+    - us_births/D              # Healthcare,    186 /  32
+    - bizitobs_l2c/H           # Web/CloudOps,  287 /  49
+    - LOOP_SEATTLE/H           # Transport,     512 / 512
+    - m4_hourly/H              # Econ/Fin,      512 / 512
   reward_windows_per_dataset: 512
   comparison_windows_per_dataset: 512
   reward_fraction: 0.85
+  comparison_context_may_cross: true  # a comparison context may read the end of the reward split
+  min_windows_per_split: 32
+  stride_in_horizons: 1        # one horizon between two candidate windows
+  seed: 0                      # fixed: every run scores the same windows

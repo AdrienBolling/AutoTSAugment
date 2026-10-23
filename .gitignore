@@ -18,8 +18,7 @@ multirun/
 mlruns/
 runs/
 checkpoints/
-data/
-!data/.gitkeep
+/data/
 *.log
 
 # DVC local override
