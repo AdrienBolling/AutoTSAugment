@@ -195,8 +195,9 @@ class FakeTSModel(TSModel[FakeTSModelConfig]):
             loss=stacked.mean(),
             loss_last=stacked[-1],
             grad_norm=torch.stack(grads).mean(),
-            lr=torch.tensor(self.config.learning_rate, device=self._device),
-            n_steps=torch.tensor(float(len(losses)), device=self._device),
+            # torch.full fills on the device; torch.tensor would copy from the host and sync.
+            lr=torch.full((), self.config.learning_rate, device=self._device),
+            n_steps=torch.full((), float(len(losses)), device=self._device),
         )
 
     @checked
