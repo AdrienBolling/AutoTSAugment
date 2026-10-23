@@ -161,8 +161,10 @@ class SACAgent(Agent[SACAgentConfig]):
         self._loss = None
         self._policy = None
 
-    def _build(self, observation_spec: ObservationSpec, space: BoxSpace, seed: int) -> SACLoss:
-        """Create the networks and the loss module for the spaces of the environment."""
+    def _build(
+        self, observation_spec: ObservationSpec, space: BoxSpace, seed: int
+    ) -> tuple[SACLoss, GaussianPolicy]:
+        """Create the networks, the loss module and the policy for the given spaces."""
         in_features = observation_dim(observation_spec)
         hidden = self.config.hidden_sizes
         head = make_gaussian_head(in_features, space.dim, hidden, self.device)
@@ -183,16 +185,14 @@ class SACAgent(Agent[SACAgentConfig]):
         self._observation_spec = dict(observation_spec)
         self._loss = loss
         self._policy = GaussianPolicy(head, space, generator)
-        return loss
+        return loss, self._policy
 
     def fit(self, env: Environment[Any], *, tracker: Tracker, seed: int) -> Policy:
         """Train for ``config.episodes`` episodes and return the deterministic policy."""
         space = env.action_space.to(self.device)
         with forked_rng(self.device, derive_seed(seed, "sac", "torch")):
-            loss = self._build(env.observation_spec, space, seed)
-            if self._policy is None:
-                raise not_fitted(self)
-            learner = _SACLearner(self.config, loss, self._policy, seed=derive_seed(seed, "sac"))
+            loss, policy = self._build(env.observation_spec, space, seed)
+            learner = _SACLearner(self.config, loss, policy, seed=derive_seed(seed, "sac"))
             for episode in range(self.config.episodes):
                 run_episode(
                     env,
@@ -232,5 +232,5 @@ class SACAgent(Agent[SACAgentConfig]):
         """Rebuild the networks and restore the state that :meth:`save` wrote under ``path``."""
         state = load_state(path)
         spec = {name: tuple(shape) for name, shape in state["observation_spec"].items()}
-        loss = self._build(spec, space_from_state(state, self.device), seed=0)
+        loss, _ = self._build(spec, space_from_state(state, self.device), seed=0)
         loss.load_state_dict(state["loss"])
