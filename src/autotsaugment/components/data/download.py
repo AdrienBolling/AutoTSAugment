@@ -11,8 +11,10 @@ Hub layout of ``Salesforce/GiftEval``, read from ``HfApi.list_repo_tree`` on 202
   it is ignored because the dataset has frequency directories.
 
 The planner sums the shard sizes of the selected datasets from the Hub metadata and refuses to
-start when that sum, plus the bytes already under ``root``, exceeds the budget. The download
-writes the shards to ``root/hub`` with the same relative paths as on the Hub.
+start when that sum, plus the bytes already under ``root``, exceeds the budget. The listing and
+the download use one revision of the repository (a commit sha pins the data). The download
+writes the shards to ``root/hub/<revision>`` (``main`` when no revision is given), with the same
+relative paths as on the Hub, so shards of two revisions never mix.
 """
 
 import logging
@@ -29,6 +31,7 @@ _log = logging.getLogger(__name__)
 
 BYTES_PER_GB: Final = 10**9
 HUB_DIR: Final = "hub"
+DEFAULT_REVISION: Final = "main"
 SHARD_PATTERN: Final = re.compile(
     r"^(?P<name>[^/]+)/(?:(?P<sub>[^/]+)/)?data-(?P<index>\d{5})-of-(?P<count>\d{5})\.arrow$"
 )
@@ -209,9 +212,21 @@ class DatasetSource:
         return len(counts) == 1 and counts.pop() == len(self.shards)
 
 
-def list_hub_files(repo_id: str) -> tuple[HubFile, ...]:
-    """Return the shard files of the repository with their sizes, from the Hub metadata."""
-    entries = HfApi().list_repo_tree(repo_id, repo_type="dataset", recursive=True)
+def hub_dir(root: Path, revision: str | None) -> Path:
+    """Return ``root/hub/<revision>``, the local copy of one revision of the repository."""
+    return root / HUB_DIR / (revision or DEFAULT_REVISION).replace("/", "--")
+
+
+def list_hub_files(repo_id: str, revision: str | None = None) -> tuple[HubFile, ...]:
+    """Return the shard files of one revision of the repository, from the Hub metadata.
+
+    Args:
+        repo_id: The Hub dataset repository.
+        revision: A commit sha, branch or tag; None is the main branch.
+    """
+    entries = HfApi().list_repo_tree(
+        repo_id, repo_type="dataset", recursive=True, revision=revision
+    )
     return tuple(
         HubFile(path=entry.path, size=entry.size)
         for entry in entries
@@ -314,19 +329,20 @@ def resolve_sources(
 
 
 def find_local_sources(
-    datasets: Sequence[DatasetId], root: Path, known: Collection[str]
+    datasets: Sequence[DatasetId], root: Path, known: Collection[str], revision: str | None
 ) -> dict[DatasetId, DatasetSource]:
-    """Return the dataset ids whose complete shards are already under ``root/hub``.
+    """Return the dataset ids whose complete shards are already under ``root/hub/<revision>``.
 
     Args:
         datasets: The dataset ids to look for.
         root: The data root.
         known: The accepted frequency keys.
+        revision: The revision of the repository; None is the main branch.
 
     Returns:
         A map from dataset id to its local source, for the ids found complete.
     """
-    files = list_local_files(root / HUB_DIR)
+    files = list_local_files(hub_dir(root, revision))
     found: dict[DatasetId, DatasetSource] = {}
     for dataset in datasets:
         try:
@@ -351,19 +367,26 @@ class DownloadPlan:
 
     Attributes:
         repo_id: The Hub dataset repository.
-        root: The data root; shards go to ``root/hub``.
+        revision: The revision of the repository; None is the main branch.
+        root: The data root; shards go to ``root/hub/<revision>``.
         sources: The shards of each selected dataset id.
-        missing: The shards not yet under ``root/hub`` with the Hub size.
+        missing: The shards not yet in the local copy with the Hub size.
         existing_bytes: Bytes under ``root`` before the download.
         budget_bytes: ``max_total_gb`` in bytes.
     """
 
     repo_id: str
+    revision: str | None
     root: Path
     sources: tuple[DatasetSource, ...]
     missing: tuple[HubFile, ...]
     existing_bytes: int
     budget_bytes: int
+
+    @property
+    def hub_dir(self) -> Path:
+        """Return the local copy of the revision, ``root/hub/<revision>``."""
+        return hub_dir(self.root, self.revision)
 
     @property
     def download_bytes(self) -> int:
@@ -421,6 +444,7 @@ class DownloadPlan:
 def plan_download(
     *,
     repo_id: str,
+    revision: str | None,
     root: Path,
     datasets: Sequence[DatasetId],
     max_total_gb: float,
@@ -428,10 +452,11 @@ def plan_download(
     files: Iterable[HubFile] | None = None,
     enforce_budget: bool = True,
 ) -> DownloadPlan:
-    """Plan the download of the shards of ``datasets`` to ``root/hub``.
+    """Plan the download of the shards of ``datasets`` to ``root/hub/<revision>``.
 
     Args:
         repo_id: The Hub dataset repository.
+        revision: A commit sha, branch or tag; None is the main branch.
         root: The data root.
         datasets: The dataset ids to download.
         max_total_gb: The budget for everything under ``root``, in GB (10^9 bytes).
@@ -445,17 +470,18 @@ def plan_download(
     Raises:
         BudgetExceededError: ``enforce_budget`` is set and the plan exceeds the budget.
     """
-    listing = list_hub_files(repo_id) if files is None else tuple(files)
+    listing = list_hub_files(repo_id, revision) if files is None else tuple(files)
     sources = resolve_sources(datasets, listing, known)
-    hub_root = root / HUB_DIR
+    local = hub_dir(root, revision)
     missing = dict.fromkeys(
         shard
         for source in sources
         for shard in source.shards
-        if not _is_present(hub_root / shard.path, shard.size)
+        if not _is_present(local / shard.path, shard.size)
     )
     plan = DownloadPlan(
         repo_id=repo_id,
+        revision=revision,
         root=root,
         sources=sources,
         missing=tuple(missing),
@@ -472,7 +498,7 @@ def _is_present(path: Path, size: int) -> bool:
 
 
 def download(plan: DownloadPlan) -> None:
-    """Download the missing shards of ``plan`` to ``root/hub``.
+    """Download the missing shards of ``plan`` to ``root/hub/<revision>``.
 
     Raises:
         BudgetExceededError: The plan exceeds the budget.
@@ -489,6 +515,7 @@ def download(plan: DownloadPlan) -> None:
     snapshot_download(
         plan.repo_id,
         repo_type="dataset",
+        revision=plan.revision,
         allow_patterns=[file.path for file in plan.missing],
-        local_dir=plan.root / HUB_DIR,
+        local_dir=plan.hub_dir,
     )

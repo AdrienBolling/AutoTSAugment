@@ -1,17 +1,23 @@
-# Every GIFT-Eval "<name>/<freq>" (47 of 55) that has a window in both splits, over the seven
-# domains: 1173.5 MB of shards, inside the 10 GB budget. The comments give the shard size and the
-# reward / comparison windows built with the values below (measured 2026-10-23).
-# Left out: the 8 ids with an empty split. Every split of every series stays inside its part of
-# the series (last 10% never read, then 85% reward, 15% comparison), and these series are too
-# short for one window (a window needs `season` observed context steps plus one horizon):
-#   - electricity/W                  #   0.32 MB, length 208: empty comparison split
+# Every GIFT-Eval "<name>/<freq>" (44 of 55) with at least min_windows_per_split = 32 valid
+# windows in both splits, over the seven domains: 1174.1 MB of shards, inside the 10 GB budget.
+# The comments give the shard size and the reward / comparison windows kept with the values
+# below (measured 2026-10-23 at the pinned revision).
+# The last 10% of each series is never read; the rest is 85% reward, 15% comparison. The
+# horizon of a window lies inside its split; a comparison context may read the end of the
+# reward split (comparison_context_may_cross).
+# Left out, empty split: the series are too short for one horizon in the split.
 #   - solar/W                        #   0.03 MB, length  52: empty reward split
-#   - hospital/M                     #   0.28 MB, length  84: empty comparison split
-#   - covid_deaths/D                 #   0.23 MB, length 212: empty comparison split
-#   - car_parts_with_missing/M       #   0.62 MB, length  51: empty comparison split
-#   - hierarchical_sales/W           #   0.13 MB, length 260: empty comparison split
-#   - ett1/W                         #   0.00 MB, length 103: empty comparison split
-#   - ett2/W                         #   0.00 MB, length 103: empty comparison split
+#   - covid_deaths/D                 #   0.23 MB, length 212: empty comparison split (29 steps < horizon 30)
+#   - car_parts_with_missing/M       #   0.62 MB, length  51: empty comparison split (7 steps < horizon 12)
+# Left out, fewer than 32 valid windows (reward / comparison):
+#   - us_births/M                    #   0.00 MB,  14 /   2 windows
+#   - us_births/W                    #   0.01 MB,  93 /  17 windows
+#   - saugeenday/M                   #   0.00 MB,  48 /   8 windows
+#   - ett1/D                         #   0.02 MB, 126 /  21 windows
+#   - ett1/W                         #   0.00 MB,  21 /   7 windows
+#   - ett2/D                         #   0.02 MB, 126 /  21 windows
+#   - ett2/W                         #   0.00 MB,  21 /   7 windows
+#   - jena_weather/D                 #   0.03 MB, 189 /  21 windows
 # Download first: uv run python scripts/download_benchmarks.py --config configs/env/benchmark/gifteval_full.yaml
 _target_: autotsaugment.components.data.gifteval.GiftEvalBenchmark
 device: ${device}
@@ -19,6 +25,7 @@ config:
   _target_: autotsaugment.components.data.gifteval.GiftEvalBenchmarkConfig
   root: data/gifteval
   repo_id: Salesforce/GiftEval
+  revision: 30841734ac5cfddbd0c3bad6d09d2b6b32becbb0  # main on 2026-10-23
   max_total_gb: 10.0
   datasets:
     # Econ/Fin
@@ -32,38 +39,35 @@ config:
     - electricity/15T                   #   207.59 MB, 512 / 512 windows
     - electricity/H                     #    51.91 MB, 512 / 512 windows
     - electricity/D                     #     2.17 MB, 512 / 512 windows
+    - electricity/W                     #     0.32 MB, 512 / 512 windows
     - solar/10T                         #    28.81 MB, 512 / 512 windows
     - solar/H                           #     4.81 MB, 512 / 512 windows
     - solar/D                           #     0.20 MB, 512 / 137 windows
     - ett1/15T                          #     1.95 MB, 512 / 512 windows
-    - ett1/H                            #     0.49 MB, 512 / 336 windows
-    - ett1/D                            #     0.02 MB, 126 /  21 windows
+    - ett1/H                            #     0.49 MB, 512 / 343 windows
     - ett2/15T                          #     1.95 MB, 512 / 512 windows
-    - ett2/H                            #     0.49 MB, 512 / 336 windows
-    - ett2/D                            #     0.02 MB, 126 /  21 windows
+    - ett2/H                            #     0.49 MB, 512 / 343 windows
     # Healthcare
+    - hospital/M                        #     0.28 MB, 512 / 512 windows
     - us_births/D                       #     0.03 MB, 186 /  32 windows
-    - us_births/M                       #     0.00 MB,  14 /   1 windows
-    - us_births/W                       #     0.01 MB,  93 /  11 windows
     # Nature
     - saugeenday/D                      #     0.10 MB, 512 / 106 windows
-    - saugeenday/M                      #     0.00 MB,  48 /   7 windows
-    - saugeenday/W                      #     0.01 MB, 317 /  50 windows
+    - saugeenday/W                      #     0.01 MB, 317 /  57 windows
     - temperature_rain_with_missing/D   #    93.88 MB, 512 / 512 windows
     - kdd_cup_2018_with_missing/H       #    11.78 MB, 512 / 512 windows
-    - kdd_cup_2018_with_missing/D       #     0.50 MB, 512 / 254 windows
+    - kdd_cup_2018_with_missing/D       #     0.50 MB, 512 / 509 windows
     - jena_weather/10T                  #     4.43 MB, 512 / 512 windows
     - jena_weather/H                    #     0.74 MB, 512 / 504 windows
-    - jena_weather/D                    #     0.03 MB, 189 /  21 windows
     # Sales
     - restaurant/D                      #     1.19 MB, 512 / 512 windows
     - hierarchical_sales/D              #     0.87 MB, 512 / 512 windows
+    - hierarchical_sales/W              #     0.13 MB, 512 / 472 windows
     # Transport
     - LOOP_SEATTLE/5T                   #   135.82 MB, 512 / 512 windows
     - LOOP_SEATTLE/H                    #    11.33 MB, 512 / 512 windows
     - LOOP_SEATTLE/D                    #     0.48 MB, 512 / 323 windows
     - SZ_TAXI/15T                       #     1.86 MB, 512 / 512 windows
-    - SZ_TAXI/H                         #     0.47 MB, 512 / 156 windows
+    - SZ_TAXI/H                         #     0.47 MB, 512 / 312 windows
     - M_DENSE/H                         #    16.82 MB, 512 / 512 windows
     - M_DENSE/D                         #     0.70 MB, 512 /  90 windows
     # Web/CloudOps
@@ -71,12 +75,14 @@ config:
     - bitbrains_fast_storage/H          #    25.31 MB, 512 / 512 windows
     - bitbrains_rnd/5T                  #   120.99 MB, 512 / 512 windows
     - bitbrains_rnd/H                   #    10.11 MB, 512 / 512 windows
-    - bizitobs_application/10S          #     1.31 MB, 266 /  34 windows
+    - bizitobs_application/10S          #     1.31 MB, 266 /  48 windows
     - bizitobs_service/10S              #    26.72 MB, 512 / 512 windows
     - bizitobs_l2c/5T                   #     1.15 MB, 512 / 512 windows
     - bizitobs_l2c/H                    #     0.10 MB, 287 /  49 windows
   reward_windows_per_dataset: 512
   comparison_windows_per_dataset: 512
   reward_fraction: 0.85
+  comparison_context_may_cross: true
+  min_windows_per_split: 32
   stride_in_horizons: 1
   seed: 0

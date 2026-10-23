@@ -5,10 +5,12 @@ Build order, once per process:
 1. The config validates every dataset id before any data loads.
 2. Each dataset id with a cache file under ``root/cache`` loads from it: no network and no
    Arrow read.
-3. The other dataset ids read their shards from ``root/hub``. Shards that are not there come
-   from the Hub, after a size plan that must fit ``max_total_gb``.
+3. The other dataset ids read their shards from ``root/hub/<revision>``. Shards that are not
+   there come from the Hub, after a size plan that must fit ``max_total_gb``.
 4. The windows of each dataset are cut, scored and written to the cache.
-5. The per-dataset windows are concatenated in config order and moved to the device.
+5. A dataset with fewer than ``min_windows_per_split`` windows in a split raises
+   :class:`~autotsaugment.components.data.windows.TooFewWindowsError`, also from the cache.
+6. The per-dataset windows are concatenated in config order and moved to the device.
 """
 
 import itertools
@@ -22,10 +24,10 @@ from pydantic import Field, field_validator, model_validator
 from autotsaugment.components.data.arrow import read_series
 from autotsaugment.components.data.cache import cache_key, cache_path, load_windows, save_windows
 from autotsaugment.components.data.download import (
-    HUB_DIR,
     DatasetId,
     download,
     find_local_sources,
+    hub_dir,
     normalize_freq,
     parse_dataset_id,
     plan_download,
@@ -33,11 +35,13 @@ from autotsaugment.components.data.download import (
 from autotsaugment.components.data.windows import (
     COMPARISON,
     REWARD,
+    SPLITS,
     USABLE_FRACTION,
     SplitWindows,
     WindowSpec,
     assemble_window_set,
     build_dataset_windows,
+    check_window_counts,
 )
 from autotsaugment.core.benchmark import Benchmark, BenchmarkConfig, WindowSet
 
@@ -87,12 +91,20 @@ class GiftEvalBenchmarkConfig(BenchmarkConfig):
     """Config of :class:`GiftEvalBenchmark`.
 
     Attributes:
-        root: Data root. Shards go to ``root/hub``, window caches to ``root/cache``.
+        root: Data root. Shards go to ``root/hub/<revision>``, window caches to
+            ``root/cache``.
         repo_id: Hugging Face dataset repository.
+        revision: Commit sha (or branch or tag) of the repository; None is the main branch.
+            The YAML files pin a commit sha, so the data cannot change under a run.
         max_total_gb: Budget for everything under ``root``, in GB (10^9 bytes).
         datasets: Dataset ids ``"<name>/<freq>"``; the order is the dataset index order. The
             frequency is a pandas alias or a key of ``context_by_freq``.
         stride_in_horizons: Steps between two candidate windows, in horizons of the frequency.
+        comparison_context_may_cross: Let the context of a comparison window read the end of
+            the reward split. Only its horizon must lie in the comparison split. False keeps
+            the whole comparison window inside the comparison split.
+        min_windows_per_split: Minimum number of valid windows of each dataset in each split.
+            Fewer raises an error.
         seed: Seed of the window subsample. Keep it fixed across runs so every run scores the
             same windows.
         quantile_levels: Levels of the naive pinball loss, the tsmodel's levels.
@@ -100,9 +112,12 @@ class GiftEvalBenchmarkConfig(BenchmarkConfig):
 
     root: Path = Path("data/gifteval")
     repo_id: str = "Salesforce/GiftEval"
+    revision: str | None = None
     max_total_gb: float = Field(default=10.0, gt=0.0)
     datasets: tuple[str, ...] = Field(min_length=1)
     stride_in_horizons: int = Field(default=1, ge=1)
+    comparison_context_may_cross: bool = True
+    min_windows_per_split: int = Field(default=32, ge=1)
     seed: int = 0
     quantile_levels: tuple[float, ...] = TIMESTRAL_QUANTILE_LEVELS
 
@@ -122,8 +137,15 @@ class GiftEvalBenchmarkConfig(BenchmarkConfig):
         if not 0.0 < self.reward_fraction < 1.0:
             msg = f"reward_fraction must lie in (0, 1), got {self.reward_fraction}"
             raise ValueError(msg)
-        if min(self.reward_windows_per_dataset, self.comparison_windows_per_dataset) < 1:
-            msg = "reward and comparison windows per dataset must be at least 1"
+        kept = min(self.reward_windows_per_dataset, self.comparison_windows_per_dataset)
+        if kept < self.min_windows_per_split:
+            msg = (
+                f"min_windows_per_split = {self.min_windows_per_split} exceeds the windows kept "
+                f"per dataset ({kept})"
+            )
+            raise ValueError(msg)
+        if self.revision is not None and not self.revision.strip():
+            msg = "revision must be None or a non-empty commit sha, branch or tag"
             raise ValueError(msg)
         ids = self.dataset_ids
         for dataset in ids:
@@ -161,6 +183,7 @@ class GiftEvalBenchmarkConfig(BenchmarkConfig):
         spec = self.window_spec(dataset.freq)
         return {
             "repo_id": self.repo_id,
+            "revision": self.revision,
             "dataset": str(dataset),
             "context_length": spec.context_length,
             "horizon": spec.horizon,
@@ -170,6 +193,7 @@ class GiftEvalBenchmarkConfig(BenchmarkConfig):
             "max_horizon": spec.max_horizon,
             "usable_fraction": str(USABLE_FRACTION),
             "reward_fraction": self.reward_fraction,
+            "comparison_context_may_cross": self.comparison_context_may_cross,
             "reward_windows_per_dataset": self.reward_windows_per_dataset,
             "comparison_windows_per_dataset": self.comparison_windows_per_dataset,
             "seed": self.seed,
@@ -243,7 +267,13 @@ def _load_or_build(
         path = paths[dataset]
         if dataset not in shards:
             _log.info("%s: windows from %s", dataset, path)
-            parts.append(load_windows(path))
+            windows = load_windows(path)
+            check_window_counts(
+                str(dataset),
+                {split: windows[split].n_windows for split in SPLITS},
+                config.min_windows_per_split,
+            )
+            parts.append(windows)
             continue
         data = read_series(shards[dataset])
         if normalize_freq(data.freq, known) != dataset.freq:
@@ -254,10 +284,12 @@ def _load_or_build(
             config.window_spec(dataset.freq),
             dataset_id=str(dataset),
             reward_fraction=config.reward_fraction,
+            comparison_context_may_cross=config.comparison_context_may_cross,
             windows_per_split={
                 REWARD: config.reward_windows_per_dataset,
                 COMPARISON: config.comparison_windows_per_dataset,
             },
+            min_windows=config.min_windows_per_split,
             levels=levels,
             seed=config.seed,
         )
@@ -279,11 +311,12 @@ def _shard_paths(
 ) -> dict[DatasetId, tuple[Path, ...]]:
     """Return the local shard files of each dataset id, downloaded first when missing."""
     known = config.context_by_freq.keys()
-    sources = find_local_sources(datasets, config.root, known)
+    sources = find_local_sources(datasets, config.root, known, config.revision)
     absent = [dataset for dataset in datasets if dataset not in sources]
     if absent:
         plan = plan_download(
             repo_id=config.repo_id,
+            revision=config.revision,
             root=config.root,
             datasets=absent,
             max_total_gb=config.max_total_gb,
@@ -293,8 +326,8 @@ def _shard_paths(
             _log.info("download plan: %s", line)
         download(plan)
         sources.update({source.dataset: source for source in plan.sources})
-    hub_root = config.root / HUB_DIR
+    local = hub_dir(config.root, config.revision)
     return {
-        dataset: tuple(hub_root / shard.path for shard in sources[dataset].shards)
+        dataset: tuple(local / shard.path for shard in sources[dataset].shards)
         for dataset in datasets
     }

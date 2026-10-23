@@ -8,11 +8,13 @@ from autotsaugment.components.data.arrow import SeriesArrays
 from autotsaugment.components.data.windows import (
     COMPARISON,
     REWARD,
-    EmptySplitError,
+    SplitBounds,
     SplitWindows,
+    TooFewWindowsError,
     WindowSpec,
     build_dataset_windows,
     candidate_windows,
+    check_window_counts,
     cut_windows,
     forward_fill,
     naive_scores,
@@ -37,33 +39,53 @@ def make_series(*rows: list[float]) -> SeriesArrays:
     return SeriesArrays(values=values, offsets=offsets, freq="H")
 
 
-def test_split_bounds_use_exact_integer_floors():
+def bounds_of(start: list[int], end: list[int], context_start: list[int]) -> SplitBounds:
+    return SplitBounds(
+        start=torch.tensor(start), end=torch.tensor(end), context_start=torch.tensor(context_start)
+    )
+
+
+@pytest.mark.parametrize("cross", [True, False])
+def test_split_bounds_use_exact_integer_floors(cross: bool):
     lengths = torch.tensor([10, 20, 51, 100, 212, 17420])
     expected_test = [int(Fraction(9, 10) * t) for t in lengths.tolist()]
     torch.testing.assert_close(usable_ends(lengths), torch.tensor(expected_test))
-    bounds = split_bounds(lengths, 0.85)
+    bounds = split_bounds(lengths, 0.85, comparison_context_may_cross=cross)
     expected_reward = [int(Fraction(17, 20) * t) for t in expected_test]
-    torch.testing.assert_close(bounds[REWARD][1], torch.tensor(expected_reward))
-    torch.testing.assert_close(bounds[COMPARISON][0], bounds[REWARD][1])
-    torch.testing.assert_close(bounds[COMPARISON][1], torch.tensor(expected_test))
-    assert bounds[REWARD][0].tolist() == [0] * 6
+    reward, comparison = bounds[REWARD], bounds[COMPARISON]
+    torch.testing.assert_close(reward.end, torch.tensor(expected_reward))
+    assert reward.start.tolist() == reward.context_start.tolist() == [0] * 6
+    torch.testing.assert_close(comparison.start, reward.end)
+    torch.testing.assert_close(comparison.end, torch.tensor(expected_test))
+    expected_context = [0] * 6 if cross else expected_reward
+    assert comparison.context_start.tolist() == expected_context
     # 0.7 * 90 is 62.99999999999999 in floating point; the exact floor is 63.
     assert math.floor(0.7 * 90) == 62
-    assert split_bounds(torch.tensor([100]), 0.7)[REWARD][1].item() == 63
+    short = split_bounds(torch.tensor([100]), 0.7, comparison_context_may_cross=cross)
+    assert short[REWARD].end.item() == 63
 
 
 def test_candidate_windows_are_anchored_at_the_split_end():
-    start, end = torch.tensor([0, 3]), torch.tensor([20, 9])
-    series, horizon_start = candidate_windows(start, end, SPEC)
+    bounds = bounds_of([0, 3], [20, 9], [0, 3])
+    series, horizon_start = candidate_windows(bounds, SPEC)
     # series 0: span 20 - 4 - 2 = 14 -> 4 candidates; series 1: span 0 -> 1 candidate
     assert series.tolist() == [0, 0, 0, 0, 1]
     assert horizon_start.tolist() == [4, 8, 12, 16, 5]
-    assert torch.all(horizon_start + SPEC.horizon <= end[series])
-    assert torch.all(horizon_start - start[series] >= SPEC.season)
+    assert torch.all(horizon_start + SPEC.horizon <= bounds.end[series])
+    assert torch.all(horizon_start - bounds.context_start[series] >= SPEC.season)
+
+
+def test_candidate_windows_with_a_crossing_context():
+    # horizons in [10, 15): only t = 11 fits; it needs a context that starts before 10
+    strict, _ = candidate_windows(bounds_of([10], [15], [10]), SPEC)
+    crossing, horizon_start = candidate_windows(bounds_of([10], [15], [0]), SPEC)
+    assert strict.numel() == 0
+    assert crossing.tolist() == [0]
+    assert horizon_start.tolist() == [11]
 
 
 def test_candidate_windows_skip_short_splits():
-    series, horizon_start = candidate_windows(torch.tensor([0]), torch.tensor([5]), SPEC)
+    series, horizon_start = candidate_windows(bounds_of([0], [5], [0]), SPEC)
     assert series.numel() == 0
     assert horizon_start.numel() == 0
 
@@ -74,13 +96,12 @@ def test_valid_windows_drop_nan_targets_and_sparse_contexts():
         row[t] = NAN
     sparse = [NAN] * 23 + [1.0]
     data = make_series(row, sparse)
-    start, end = torch.tensor([0, 0]), torch.tensor([24, 24])
-    series, horizon_start = valid_windows(data, start, end, SPEC)
+    series, horizon_start = valid_windows(data, bounds_of([0, 0], [24, 24], [0, 0]), SPEC)
     assert series.tolist() == [0, 0, 0, 0]
     assert horizon_start.tolist() == [4, 8, 16, 20]  # t = 12 dropped, series 1 dropped
 
 
-def test_cut_windows_pads_and_never_reads_before_the_split():
+def test_cut_windows_pads_and_never_reads_before_the_context_start():
     data = make_series([float(t) for t in range(30)])
     start = torch.tensor([10])
     context, target = cut_windows(data.values, torch.tensor([0]), torch.tensor([14]), start, SPEC)
@@ -127,34 +148,53 @@ def test_subsample_is_sorted_seeded_and_bounded():
     assert subsample(5, 10, make_generator("cpu", 1)).tolist() == [0, 1, 2, 3, 4]
 
 
-def _build(data: SeriesArrays, dataset_id: str, per_split: int = 3) -> dict[str, SplitWindows]:
+def _build(
+    data: SeriesArrays,
+    dataset_id: str,
+    per_split: int = 3,
+    *,
+    cross: bool = True,
+    min_windows: int = 1,
+) -> dict[str, SplitWindows]:
     return build_dataset_windows(
         data,
         SPEC,
         dataset_id=dataset_id,
         reward_fraction=0.5,
+        comparison_context_may_cross=cross,
         windows_per_split={REWARD: per_split, COMPARISON: per_split},
+        min_windows=min_windows,
         levels=LEVELS,
         seed=0,
     )
 
 
-def test_build_dataset_windows_respects_both_splits():
+@pytest.mark.parametrize("cross", [True, False])
+def test_build_dataset_windows_respects_the_split_rules(cross: bool):
     rows = [[float(t) for t in range(length)] for length in (200, 150, 120)]
     data = make_series(*rows)
-    windows = _build(data, "x/H", per_split=1000)
+    windows = _build(data, "x/H", per_split=1000, cross=cross)
     test_start = usable_ends(data.lengths)
     reward_end = test_start // 2
+    context_reads_reward = False
     for split, part in windows.items():
         assert part.n_windows > 0
-        lo = torch.zeros_like(reward_end) if split == REWARD else reward_end
-        hi = reward_end if split == REWARD else test_start
-        end = part.horizon_start + SPEC.horizon
-        assert torch.all(end <= hi[part.series])
-        values = torch.cat([part.context, part.target], dim=1)
-        finite = torch.isfinite(values)
-        assert torch.all(values[finite] < hi[part.series].unsqueeze(1).expand_as(values)[finite])
-        assert torch.all(values[finite] >= lo[part.series].unsqueeze(1).expand_as(values)[finite])
+        horizon_lo = torch.zeros_like(reward_end) if split == REWARD else reward_end
+        horizon_hi = reward_end if split == REWARD else test_start
+        context_lo = (
+            reward_end if split == COMPARISON and not cross else torch.zeros_like(reward_end)
+        )
+        for row in range(part.n_windows):
+            series = int(part.series[row])
+            context = part.context[row][torch.isfinite(part.context[row])]
+            target = part.target[row][torch.isfinite(part.target[row])]
+            assert int(target.min()) >= int(horizon_lo[series])
+            assert int(target.max()) < int(horizon_hi[series])
+            assert int(context.min()) >= int(context_lo[series])
+            assert int(context.max()) < int(target.min())
+            if split == COMPARISON and int(context.min()) < int(reward_end[series]):
+                context_reads_reward = True
+    assert context_reads_reward == cross
 
 
 def test_build_dataset_windows_subsample_depends_on_the_dataset_id():
@@ -173,8 +213,29 @@ def test_build_dataset_windows_subsample_depends_on_the_dataset_id():
 
 def test_build_dataset_windows_raises_on_an_empty_split():
     data = make_series([float(t) for t in range(10)])
-    with pytest.raises(EmptySplitError, match="x/H: the reward split has no valid window"):
+    with pytest.raises(
+        TooFewWindowsError,
+        match=r"x/H: too few windows in the reward split \(reward 0, comparison 1",
+    ):
         _build(data, "x/H")
+
+
+def test_build_dataset_windows_raises_below_the_minimum():
+    # length 60: test_start 54, reward_end 27; comparison horizons start in [27, 50]
+    data = make_series([float(t) for t in range(60)])
+    assert _build(data, "x/H", min_windows=6)[COMPARISON].n_windows == 3
+    with pytest.raises(
+        TooFewWindowsError, match=r"\(reward 6, comparison 6, min_windows_per_split 7\)"
+    ):
+        _build(data, "x/H", min_windows=7)
+
+
+def test_check_window_counts_names_every_short_split():
+    check_window_counts("x/H", {REWARD: 5, COMPARISON: 5}, 5)
+    with pytest.raises(
+        TooFewWindowsError, match="x/H: too few windows in the reward and comparison"
+    ):
+        check_window_counts("x/H", {REWARD: 1, COMPARISON: 2}, 5)
 
 
 def test_split_windows_dict_round_trip():

@@ -68,6 +68,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     plan = plan_download(
         repo_id=config.repo_id,
+        revision=config.revision,
         root=config.root,
         datasets=config.dataset_ids,
         max_total_gb=config.max_total_gb,
@@ -83,7 +84,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except BudgetExceededError as error:
         print(f"refused: {error}", file=sys.stderr)
         return 1
-    print(f"done: {len(plan.missing)} shards in {config.root / 'hub'}")
+    print(f"done: {len(plan.missing)} shards in {plan.hub_dir}")
     return 0
 
 

@@ -10,11 +10,21 @@ Splits, per series of length ``T``:
 Both floors use integer arithmetic on the decimal value of the fractions, so they are exact.
 
 Windows: a window has a horizon of ``h`` steps that starts at index ``t`` and a context of at
-most ``c`` steps that ends at ``t``. The context and the horizon lie fully inside one split, so
-the context is ``[max(split_start, t - c), t)`` and can be shorter than ``c`` near the split
-start. Candidate horizons are anchored at the end of the split, ``t = split_end - h - j *
-stride`` for ``j = 0, 1, ...``, and need ``t - split_start >= season``. A candidate is valid when
-its target has at least one observed value and its context at least ``season`` observed values.
+most ``c`` steps that ends at ``t``. The horizon lies fully inside its split. The context reads
+``[max(context_start, t - c), t)``, where ``context_start`` is the first index the split lets a
+context read:
+
+- reward split: ``0``, so the whole reward window lies inside the reward split.
+- comparison split: ``0`` when ``comparison_context_may_cross`` is set (the default), so the
+  context may read the end of the reward split, as a GIFT-Eval test window reads the training
+  part; ``reward_end`` otherwise, so the whole window lies inside the comparison split.
+
+No window reads ``[test_start, T)``. The context can be shorter than ``c`` near
+``context_start``. Candidate horizons are anchored at the end of the split, ``t = split_end - h -
+j * stride`` for ``j = 0, 1, ...``, and need ``t >= split_start`` and ``t - context_start >=
+season``. A candidate is valid when its target has at least one observed value and its context
+at least ``season`` observed values. A dataset with fewer than ``min_windows`` valid windows in
+a split raises :class:`TooFewWindowsError`.
 
 Padding: the context is right-aligned in a NaN row of ``max_context_length`` columns and the
 target is left-aligned in a NaN row of ``max_horizon`` columns, so one tensor holds all
@@ -26,7 +36,7 @@ observed values in the context, the forward fill leaves no NaN in the last seaso
 naive forecast is finite.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import Final
@@ -58,8 +68,8 @@ FlatValues = Float[Tensor, "total"]
 WindowIndex = Int64[Tensor, "n"]
 
 
-class EmptySplitError(ValueError):
-    """A split of a dataset has no valid window."""
+class TooFewWindowsError(ValueError):
+    """A split of a dataset has fewer valid windows than the minimum, possibly none."""
 
 
 @dataclass(frozen=True)
@@ -108,48 +118,71 @@ def usable_ends(lengths: Tensor) -> Tensor:
     return lengths * USABLE_FRACTION.numerator // USABLE_FRACTION.denominator
 
 
-def split_bounds(lengths: Tensor, reward_fraction: float) -> dict[str, tuple[Tensor, Tensor]]:
-    """Return the ``[start, end)`` index bounds of each split, per series.
+@dataclass(frozen=True)
+class SplitBounds:
+    """Index bounds of one split, per series, each int64 ``(n_series,)``.
+
+    Attributes:
+        start: First index of a horizon.
+        end: End (exclusive) of the horizons.
+        context_start: First index a context may read.
+    """
+
+    start: Tensor
+    end: Tensor
+    context_start: Tensor
+
+
+def split_bounds(
+    lengths: Tensor, reward_fraction: float, *, comparison_context_may_cross: bool
+) -> dict[str, SplitBounds]:
+    """Return the index bounds of each split, per series.
 
     Args:
         lengths: Series lengths, int64, shape ``(n_series,)``.
         reward_fraction: Share of ``[0, test_start)`` that forms the reward split.
+        comparison_context_may_cross: Let comparison contexts read the reward split.
 
     Returns:
-        ``{"reward": (start, end), "comparison": (start, end)}``, each int64 ``(n_series,)``.
+        ``{"reward": ..., "comparison": ...}``.
     """
     test_start = usable_ends(lengths)
     fraction = _exact_fraction(reward_fraction)
     reward_end = test_start * fraction.numerator // fraction.denominator
+    zeros = torch.zeros_like(lengths)
     return {
-        REWARD: (torch.zeros_like(lengths), reward_end),
-        COMPARISON: (reward_end, test_start),
+        REWARD: SplitBounds(start=zeros, end=reward_end, context_start=zeros),
+        COMPARISON: SplitBounds(
+            start=reward_end,
+            end=test_start,
+            context_start=zeros if comparison_context_may_cross else reward_end,
+        ),
     }
 
 
-def candidate_windows(start: Tensor, end: Tensor, spec: WindowSpec) -> tuple[Tensor, Tensor]:
+def candidate_windows(bounds: SplitBounds, spec: WindowSpec) -> tuple[Tensor, Tensor]:
     """Return every candidate window of a split, before the validity filter.
 
     Args:
-        start: First index of the split per series, int64 ``(n_series,)``.
-        end: End index (exclusive) of the split per series, int64 ``(n_series,)``.
+        bounds: The bounds of the split.
         spec: The window lengths.
 
     Returns:
         ``(series, horizon_start)``, int64, one entry per candidate, sorted by series, then
         by horizon start.
     """
-    span = end - start - spec.horizon - spec.season
+    lowest = torch.maximum(bounds.start, bounds.context_start + spec.season)
+    span = bounds.end - spec.horizon - lowest
     count = torch.where(span >= 0, span // spec.stride + 1, torch.zeros_like(span))
     series = torch.repeat_interleave(torch.arange(count.numel()), count)
     first = torch.cumsum(count, dim=0) - count
     rank = torch.arange(series.numel()) - first[series]
-    horizon_start = end[series] - spec.horizon - (count[series] - 1 - rank) * spec.stride
+    horizon_start = bounds.end[series] - spec.horizon - (count[series] - 1 - rank) * spec.stride
     return series, horizon_start
 
 
 def valid_windows(
-    data: SeriesArrays, start: Tensor, end: Tensor, spec: WindowSpec
+    data: SeriesArrays, bounds: SplitBounds, spec: WindowSpec
 ) -> tuple[Tensor, Tensor]:
     """Return the candidate windows of a split that pass the validity filter.
 
@@ -158,20 +191,19 @@ def valid_windows(
 
     Args:
         data: The series of the dataset.
-        start: First index of the split per series.
-        end: End index (exclusive) of the split per series.
+        bounds: The bounds of the split.
         spec: The window lengths.
 
     Returns:
         ``(series, horizon_start)`` of the valid windows, in candidate order.
     """
-    series, horizon_start = candidate_windows(start, end, spec)
+    series, horizon_start = candidate_windows(bounds, spec)
     total = data.values.numel()
     count_type = torch.int32 if total < torch.iinfo(torch.int32).max else torch.int64
     observed = torch.zeros(total + 1, dtype=count_type)
     observed[1:] = torch.cumsum(~torch.isnan(data.values), dim=0, dtype=count_type)
     first = data.offsets[:-1][series]
-    context_start = torch.maximum(start[series], horizon_start - spec.context_length)
+    context_start = torch.maximum(bounds.context_start[series], horizon_start - spec.context_length)
     context_observed = observed[first + horizon_start] - observed[first + context_start]
     target_observed = (
         observed[first + horizon_start + spec.horizon] - observed[first + horizon_start]
@@ -192,7 +224,7 @@ def cut_windows(
     values: FlatValues,
     first: WindowIndex,
     horizon_start: WindowIndex,
-    split_start: WindowIndex,
+    context_start: WindowIndex,
     spec: WindowSpec,
 ) -> tuple[Context, Target]:
     """Return the padded context and target of each window.
@@ -201,17 +233,17 @@ def cut_windows(
         values: Flat values of all series.
         first: Index of the first value of the window's series in ``values``.
         horizon_start: First horizon step of each window, in series coordinates.
-        split_start: First index of the window's split, in series coordinates.
+        context_start: First index the context may read, in series coordinates.
         spec: The window lengths.
 
     Returns:
-        The context ``(n, max_context_length)``, right-aligned, NaN before the split start
+        The context ``(n, max_context_length)``, right-aligned, NaN before ``context_start``
         and in the padding, and the target ``(n, max_horizon)``, left-aligned, NaN padded.
     """
     n = horizon_start.numel()
     steps = torch.arange(-spec.context_length, 0)
     position = horizon_start[:, None] + steps[None, :]
-    inside = position >= split_start[:, None]
+    inside = position >= context_start[:, None]
     gathered = values[first[:, None] + position.clamp(min=0)]
     context = torch.full((n, spec.max_context_length), float("nan"), dtype=values.dtype)
     context[:, spec.max_context_length - spec.context_length :] = torch.where(
@@ -302,35 +334,43 @@ class SplitWindows:
         )
 
 
-def build_split_windows(
-    data: SeriesArrays,
-    spec: WindowSpec,
-    *,
-    start: Tensor,
-    end: Tensor,
-    per_dataset: int,
-    levels: Tensor,
-    generator: torch.Generator,
-) -> SplitWindows:
-    """Cut, filter, subsample, pad and score the windows of one split.
+def check_window_counts(
+    dataset_id: str, counts: Mapping[str, int], minimum: int, detail: str = ""
+) -> None:
+    """Raise when a split has fewer than ``minimum`` windows.
 
     Args:
-        data: The series of the dataset.
-        spec: The window lengths.
-        start: First index of the split per series.
-        end: End index (exclusive) of the split per series.
-        per_dataset: Maximum number of windows kept.
-        levels: Quantile levels of the naive pinball loss, float32 ``(q,)``.
-        generator: CPU generator of the subsample.
+        dataset_id: The id ``"<name>/<freq>"``.
+        counts: The number of valid windows of each split.
+        minimum: The minimum number of windows per split.
+        detail: Extra text for the message.
 
-    Returns:
-        The kept windows, sorted by series, then by horizon start.
+    Raises:
+        TooFewWindowsError: A split has fewer than ``minimum`` windows.
     """
-    series, horizon_start = valid_windows(data, start, end, spec)
-    keep = subsample(series.numel(), per_dataset, generator)
-    series, horizon_start = series[keep], horizon_start[keep]
+    short = [split for split in SPLITS if counts[split] < minimum]
+    if short:
+        msg = (
+            f"{dataset_id}: too few windows in the {' and '.join(short)} split "
+            f"(reward {counts[REWARD]}, comparison {counts[COMPARISON]}, "
+            f"min_windows_per_split {minimum}){detail}. Remove the dataset, or change "
+            "min_windows_per_split or reward_fraction."
+        )
+        raise TooFewWindowsError(msg)
+
+
+def _cut_split(
+    data: SeriesArrays,
+    spec: WindowSpec,
+    windows: tuple[Tensor, Tensor],
+    *,
+    bounds: SplitBounds,
+    levels: Tensor,
+) -> SplitWindows:
+    """Pad and score the selected windows of one split."""
+    series, horizon_start = windows
     context, target = cut_windows(
-        data.values, data.offsets[:-1][series], horizon_start, start[series], spec
+        data.values, data.offsets[:-1][series], horizon_start, bounds.context_start[series], spec
     )
     naive_loss_sum, abs_sum = naive_scores(context, target, levels, spec.season)
     return SplitWindows(
@@ -349,7 +389,9 @@ def build_dataset_windows(
     *,
     dataset_id: str,
     reward_fraction: float,
-    windows_per_split: dict[str, int],
+    comparison_context_may_cross: bool,
+    windows_per_split: Mapping[str, int],
+    min_windows: int,
     levels: Tensor,
     seed: int,
 ) -> dict[str, SplitWindows]:
@@ -364,7 +406,9 @@ def build_dataset_windows(
         spec: The window lengths of the dataset's frequency.
         dataset_id: The id ``"<name>/<freq>"``.
         reward_fraction: Share of the usable part that forms the reward split.
+        comparison_context_may_cross: Let comparison contexts read the reward split.
         windows_per_split: Maximum number of windows kept per split.
+        min_windows: Minimum number of valid windows per split.
         levels: Quantile levels of the naive pinball loss.
         seed: The root seed of the subsample.
 
@@ -372,35 +416,28 @@ def build_dataset_windows(
         ``{"reward": ..., "comparison": ...}``.
 
     Raises:
-        EmptySplitError: A split has no valid window.
+        TooFewWindowsError: A split has fewer than ``min_windows`` valid windows.
     """
-    bounds = split_bounds(data.lengths, reward_fraction)
+    bounds = split_bounds(
+        data.lengths, reward_fraction, comparison_context_may_cross=comparison_context_may_cross
+    )
+    valid = {split: valid_windows(data, bounds[split], spec) for split in SPLITS}
+    lengths = data.lengths.tolist() or [0]
+    check_window_counts(
+        dataset_id,
+        {split: int(valid[split][0].numel()) for split in SPLITS},
+        min_windows,
+        f"; series lengths {min(lengths)}..{max(lengths)}, a window needs {spec.season} "
+        f"observed context steps and {spec.horizon} horizon steps",
+    )
     result: dict[str, SplitWindows] = {}
     for split in SPLITS:
-        start, end = bounds[split]
+        series, horizon_start = valid[split]
         generator = make_generator("cpu", derive_seed(seed, dataset_id, split))
-        windows = build_split_windows(
-            data,
-            spec,
-            start=start,
-            end=end,
-            per_dataset=windows_per_split[split],
-            levels=levels,
-            generator=generator,
+        keep = subsample(series.numel(), windows_per_split[split], generator)
+        result[split] = _cut_split(
+            data, spec, (series[keep], horizon_start[keep]), bounds=bounds[split], levels=levels
         )
-        if windows.n_windows == 0:
-            lengths = data.lengths
-            longest = int((end - start).max()) if lengths.numel() else 0
-            msg = (
-                f"{dataset_id}: the {split} split has no valid window. Its longest part has "
-                f"{longest} steps; a window needs at least {spec.season} observed context "
-                f"steps and {spec.horizon} horizon steps (series lengths "
-                f"{int(lengths.min()) if lengths.numel() else 0}.."
-                f"{int(lengths.max()) if lengths.numel() else 0}). Remove the dataset or "
-                "change reward_fraction."
-            )
-            raise EmptySplitError(msg)
-        result[split] = windows
     return result
 
 

@@ -9,7 +9,6 @@ from omegaconf import OmegaConf
 
 from autotsaugment.components.data import download as download_module
 from autotsaugment.components.data.download import (
-    HUB_DIR,
     BudgetExceededError,
     DatasetId,
     DatasetSource,
@@ -18,6 +17,7 @@ from autotsaugment.components.data.download import (
     UnknownFrequencyError,
     download,
     find_local_sources,
+    hub_dir,
     list_hub_files,
     normalize_freq,
     parse_dataset_id,
@@ -25,11 +25,12 @@ from autotsaugment.components.data.download import (
     resolve_sources,
 )
 from autotsaugment.components.data.gifteval import GiftEvalBenchmark, GiftEvalBenchmarkConfig
-from autotsaugment.components.data.windows import EmptySplitError
+from autotsaugment.components.data.windows import TooFewWindowsError
 from autotsaugment.core.benchmark import BenchmarkConfig
 from autotsaugment.core.metrics import skill_scores, wql_per_dataset
 
 REPO = Path(__file__).resolve().parents[1]
+REVISION = "30841734ac5cfddbd0c3bad6d09d2b6b32becbb0"  # Salesforce/GiftEval main, 2026-10-23
 KNOWN = tuple(BenchmarkConfig().context_by_freq)
 LISTING = (
     HubFile("ett1/H/data-00000-of-00001.arrow", 100),
@@ -129,10 +130,11 @@ def write_bytes(path: Path, size: int) -> None:
 
 
 def test_plan_counts_present_shards_and_existing_bytes(tmp_path: Path):
-    write_bytes(tmp_path / HUB_DIR / "ett1/H/data-00000-of-00001.arrow", 100)
+    write_bytes(hub_dir(tmp_path, None) / "ett1/H/data-00000-of-00001.arrow", 100)
     write_bytes(tmp_path / "cache" / "other.pt", 30)
     plan = plan_download(
         repo_id="r",
+        revision=None,
         root=tmp_path,
         datasets=[ETT1_H, COVID_D],
         max_total_gb=1.0,
@@ -159,6 +161,7 @@ def test_planner_refuses_a_plan_over_the_budget(tmp_path: Path, monkeypatch: pyt
     with pytest.raises(BudgetExceededError, match="exceeds max_total_gb"):
         plan_download(
             repo_id="r",
+            revision=None,
             root=tmp_path,
             datasets=[ETT1_H, COVID_D],
             max_total_gb=149e-9,  # 149 bytes for a 150-byte plan
@@ -168,6 +171,7 @@ def test_planner_refuses_a_plan_over_the_budget(tmp_path: Path, monkeypatch: pyt
     write_bytes(tmp_path / "other.bin", 60)  # what is under root counts too
     plan = plan_download(
         repo_id="r",
+        revision=None,
         root=tmp_path,
         datasets=[COVID_D],
         max_total_gb=100e-9,
@@ -192,6 +196,7 @@ def test_download_requests_exactly_the_missing_shards(
     )
     plan = plan_download(
         repo_id="r",
+        revision="abc123",
         root=tmp_path,
         datasets=[JENA_10T],
         max_total_gb=1.0,
@@ -204,21 +209,25 @@ def test_download_requests_exactly_the_missing_shards(
             "r",
             {
                 "repo_type": "dataset",
+                "revision": "abc123",
                 "allow_patterns": [
                     "jena_weather/10T/data-00000-of-00002.arrow",
                     "jena_weather/10T/data-00001-of-00002.arrow",
                 ],
-                "local_dir": tmp_path / HUB_DIR,
+                "local_dir": tmp_path / "hub" / "abc123",
             },
         )
     ]
 
 
-def test_find_local_sources_needs_complete_shards(tmp_path: Path):
-    write_bytes(tmp_path / HUB_DIR / "ett1/H/data-00000-of-00001.arrow", 10)
-    write_bytes(tmp_path / HUB_DIR / "jena_weather/10T/data-00000-of-00002.arrow", 10)
-    found = find_local_sources([ETT1_H, JENA_10T, COVID_D], tmp_path, KNOWN)
+def test_find_local_sources_needs_complete_shards_of_the_revision(tmp_path: Path):
+    write_bytes(hub_dir(tmp_path, "abc123") / "ett1/H/data-00000-of-00001.arrow", 10)
+    write_bytes(hub_dir(tmp_path, "abc123") / "jena_weather/10T/data-00000-of-00002.arrow", 10)
+    found = find_local_sources([ETT1_H, JENA_10T, COVID_D], tmp_path, KNOWN, "abc123")
     assert set(found) == {ETT1_H}
+    assert find_local_sources([ETT1_H], tmp_path, KNOWN, None) == {}
+    assert hub_dir(tmp_path, None) == tmp_path / "hub" / "main"
+    assert hub_dir(tmp_path, "refs/pr/1") == tmp_path / "hub" / "refs--pr--1"
 
 
 def load_script() -> ModuleType:
@@ -235,7 +244,13 @@ def load_script() -> ModuleType:
 def test_cli_prints_the_plan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    monkeypatch.setattr(download_module, "list_hub_files", lambda repo_id: LISTING)
+    revisions: list[str | None] = []
+
+    def fake_listing(repo_id: str, revision: str | None) -> tuple[HubFile, ...]:
+        revisions.append(revision)
+        return LISTING
+
+    monkeypatch.setattr(download_module, "list_hub_files", fake_listing)
     script = load_script()
     code = script.main(["--plan", "--root", str(tmp_path), "ett1/H", "covid_deaths/D"])
     lines = capsys.readouterr().out.splitlines()
@@ -243,7 +258,8 @@ def test_cli_prints_the_plan(
     assert lines[0].split() == ["ett1/H", "0.00", "MB", "to", "download"]
     assert lines[1].startswith("covid_deaths/D")
     assert lines[3].split()[:3] == ["to", "download", "0.00"]
-    assert not (tmp_path / HUB_DIR).exists()
+    assert revisions == [REVISION]  # the revision of gifteval_small.yaml
+    assert not (tmp_path / "hub").exists()
     over = ["--root", str(tmp_path), "--max-total-gb", "1e-9", "ett1/H"]
     assert script.main(["--plan", *over]) == 1
     assert script.main(over) == 1
@@ -255,7 +271,7 @@ def test_cli_prints_the_plan(
 
 @pytest.mark.network
 def test_network_listing_layout():
-    files = list_hub_files("Salesforce/GiftEval")
+    files = list_hub_files("Salesforce/GiftEval", REVISION)
     assert all(file.path.endswith(".arrow") and "/cache-" not in file.path for file in files)
     with pytest.raises(UnknownFrequencyError, match=r"\['15T', 'D', 'H', 'W'\]"):
         resolve_sources([DatasetId("ett1", "10T")], files, KNOWN)
@@ -267,6 +283,7 @@ def test_network_listing_layout():
 def test_network_covid_deaths_end_to_end(tmp_path: Path):
     plan = plan_download(
         repo_id="Salesforce/GiftEval",
+        revision=REVISION,
         root=tmp_path,
         datasets=[COVID_D],
         max_total_gb=0.01,
@@ -274,17 +291,18 @@ def test_network_covid_deaths_end_to_end(tmp_path: Path):
     )
     assert plan.download_bytes == plan.sources[0].size > 0
     download(plan)
-    assert (tmp_path / HUB_DIR / plan.missing[0].path).stat().st_size == plan.missing[0].size
+    local = hub_dir(tmp_path, REVISION) / plan.missing[0].path
+    assert local.stat().st_size == plan.missing[0].size
 
     # The series have 212 steps: at reward_fraction 0.85 the comparison part has 29 steps,
-    # less than one daily horizon of 30, so the default split has no comparison window.
-    with pytest.raises(EmptySplitError, match="covid_deaths/D: the comparison split"):
-        GiftEvalBenchmark(
-            config=GiftEvalBenchmarkConfig(root=tmp_path, datasets=("covid_deaths/D",)),
-            device="cpu",
-        )
-    config = GiftEvalBenchmarkConfig(
-        root=tmp_path, datasets=("covid_deaths/D",), reward_fraction=0.7, max_total_gb=0.01
+    # less than one daily horizon of 30, so the comparison split has no window.
+    pinned = {"root": tmp_path, "datasets": ("covid_deaths/D",), "revision": REVISION}
+    with pytest.raises(
+        TooFewWindowsError, match=r"covid_deaths/D: too few windows in the comparison split"
+    ):
+        GiftEvalBenchmark(config=GiftEvalBenchmarkConfig.model_validate(pinned), device="cpu")
+    config = GiftEvalBenchmarkConfig.model_validate(
+        pinned | {"reward_fraction": 0.7, "max_total_gb": 0.01}
     )
     benchmark = GiftEvalBenchmark(config=config, device="cpu")
     assert benchmark.domains == ("Healthcare",)
@@ -322,6 +340,6 @@ def test_network_default_config_builds(tmp_path: Path):
     assert len(set(benchmark.domains)) == 7
     for window_set in (benchmark.reward_windows, benchmark.comparison_windows):
         counts = torch.bincount(window_set.dataset_index, minlength=8)
-        assert torch.all(counts > 0)
+        assert torch.all(counts >= 32)
         assert torch.all(counts <= 512)
         assert torch.isfinite(window_set.naive_loss_sum).all()
