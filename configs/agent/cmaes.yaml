@@ -6,3 +6,5 @@ config:
   episodes: 40          # each episode evaluates K candidates (one per lockstep env)
   sigma0: 1.0
   population: null      # null = K * ceil(default_popsize / K)
+  fixed_seed: true      # common random numbers: every evaluation episode uses the same seed
+  final: best           # best = lowest evaluated fitness; mean = final search mean
