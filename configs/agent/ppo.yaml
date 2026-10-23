@@ -13,3 +13,4 @@ config:
   episodes_per_update: 4
   ppo_epochs: 10
   minibatch_size: 64
+  max_grad_norm: 1.0    # global gradient-norm clip per gradient step; null disables it
