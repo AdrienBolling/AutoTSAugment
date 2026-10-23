@@ -1,7 +1,10 @@
 # Four observation groups: progress, train_stats, reward_vector, action_history.
 _target_: autotsaugment.components.env.featurizers.StatsFeaturizer
+_partial_: true   # the environment adds n_datasets, action_dim, batch_envs and device
 config:
   _target_: autotsaugment.components.env.featurizers.StatsFeaturizerConfig
   loss_window: 5          # epochs used for the loss slope
+  loss_ema: 0.5           # weight of the newest loss in the loss EMA
   action_ema: 0.5         # weight of the newest action in the action history
-  normalize: true         # running mean/std per feature
+  normalize: true         # running mean/std per feature, never frozen
+  epsilon: 1.0e-8         # added to the running variance before the square root
