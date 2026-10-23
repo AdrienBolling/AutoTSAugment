@@ -409,6 +409,7 @@ def cuda() -> Iterator[torch.device]:
 
 
 @pytest.mark.gpu
+@pytest.mark.filterwarnings("ignore:Synchronization debug mode:UserWarning")
 def test_bare_5m_epoch_on_the_gpu(cuda: torch.device):
     config = TimestralBareConfig(architecture=yaml_architecture())
     model = TimestralBare(config=config, device=cuda, episode_epochs=50)
@@ -437,6 +438,7 @@ def test_bare_5m_epoch_on_the_gpu(cuda: torch.device):
 
 
 @pytest.mark.gpu
+@pytest.mark.filterwarnings("ignore:Synchronization debug mode:UserWarning")
 @pytest.mark.network
 def test_pretrained_5m_beats_seasonal_naive_on_a_sine(cuda: torch.device):
     config = TimestralLoraConfig(mixed_precision=False)
@@ -465,6 +467,7 @@ def test_pretrained_5m_beats_seasonal_naive_on_a_sine(cuda: torch.device):
 
 
 @pytest.mark.gpu
+@pytest.mark.filterwarnings("ignore:Synchronization debug mode:UserWarning")
 @pytest.mark.network
 def test_pretrained_5m_lora_epoch_on_the_gpu(cuda: torch.device):
     model = TimestralLora(config=TimestralLoraConfig(), device=cuda, episode_epochs=10)
