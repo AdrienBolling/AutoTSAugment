@@ -19,7 +19,7 @@ from autotsaugment.components.augmentation.kernelsynth import (
 
 LOGGER = logging.getLogger(__name__)
 LENGTH = 64
-# A one-hot action with the default bound 4.0 puts only 0.9897 of the mass on the kernel
+# A one-hot action with the default bound 4.0 puts only 0.9894 of the mass on the kernel
 # (33 kernels). The one-hot tests use a larger bound, so the off-target mass is negligible.
 ONE_HOT_BOUND = 20.0
 # 0.999 quantile of the chi-square distribution with 32 degrees of freedom.
