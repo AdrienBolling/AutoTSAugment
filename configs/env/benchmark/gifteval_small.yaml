@@ -1,4 +1,10 @@
-# Eight GIFT-Eval datasets, one or two per domain. Dataset ids are "<name>/<freq>".
+# Eight GIFT-Eval datasets over the seven domains, 67.3 MB of shards. Dataset ids are
+# "<name>/<freq>". Every split of every series stays inside its part of the series, so a
+# dataset needs room for one window in each split:
+#   covid_deaths/D (length 212) and car_parts_with_missing/M (length 51) have a comparison
+#   split shorter than one horizon. us_births/D and restaurant/D replace them in their domains.
+# Download first (optional, the benchmark downloads what is missing):
+#   uv run python scripts/download_benchmarks.py --plan
 _target_: autotsaugment.components.data.gifteval.GiftEvalBenchmark
 device: ${device}
 config:
@@ -10,11 +16,13 @@ config:
     - ett1/H                   # Energy
     - electricity/H            # Energy
     - jena_weather/H           # Nature
-    - car_parts_with_missing/M # Sales
-    - covid_deaths/D           # Healthcare
+    - restaurant/D             # Sales, 14% missing values
+    - us_births/D              # Healthcare
     - bizitobs_l2c/H           # Web/CloudOps
     - LOOP_SEATTLE/H           # Transport
     - m4_hourly/H              # Econ/Fin
   reward_windows_per_dataset: 512
   comparison_windows_per_dataset: 512
   reward_fraction: 0.85
+  stride_in_horizons: 1        # one horizon between two candidate windows
+  seed: 0                      # fixed: every run scores the same windows
