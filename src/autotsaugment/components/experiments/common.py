@@ -52,6 +52,9 @@ CONFIG_DIR = Path(__file__).resolve().parents[4] / "configs"
 EVAL_PREFIX = "eval/"
 """Tracker prefix of the evaluation episodes, so they stay apart from the training episodes."""
 
+AGENT_CONFIG_FILE = "agent.yaml"
+"""File in a checkpoint directory with the agent config of the run that wrote it."""
+
 
 class ExperimentConfig(ComponentConfig):
     """Config shared by all experiments.

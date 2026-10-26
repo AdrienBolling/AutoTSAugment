@@ -1,8 +1,12 @@
 # @package _global_
 # Train one agent for config.episodes episodes, then evaluate its policy on the comparison
-# set over `eval_seeds` fresh episodes. Writes metrics/train_agent-<agent>.json.
+# set over `eval_seeds` fresh episodes. Writes checkpoints/train_agent/<label>/ and
+# metrics/train_agent-<label>.json (paths relative to the working directory, the repo root).
+#   uv run autotsaugment-run experiment=train_agent agent=sac
 experiment:
   _target_: autotsaugment.components.experiments.train_agent.TrainAgentExperiment
   name: train_agent
   eval_seeds: [0, 1, 2]
   checkpoint_dir: checkpoints/${experiment.name}
+  metrics_dir: metrics
+  label: null   # null = the agent class in snake case: sac, ppo, cmaes, fixed_action, random
