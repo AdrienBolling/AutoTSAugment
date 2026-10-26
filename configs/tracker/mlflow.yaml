@@ -1,4 +1,8 @@
+# MLflow, local store. A path without a scheme is a directory relative to the working directory
+# (the repository root). It holds the SQLite database mlflow.db and the artifacts/ directory.
+# View it with: uv run mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db
 _target_: autotsaugment.components.tracking.mlflow.MLflowTracker
 tracking_uri: mlruns
 experiment_name: ${experiment.name}
-run_name: null
+run_name: null   # null = a random MLflow run name
+tags: null       # extra run tags, for example {study: exp1}

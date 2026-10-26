@@ -3,7 +3,7 @@
 # with env=fake, and in minutes with the real env. The CI integration test.
 defaults:
   - override /env: fake
-  - override /tracker: null
+  - override /tracker: none
 
 device: cpu
 
