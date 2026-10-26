@@ -126,9 +126,12 @@ Training time is the budget. These rules are not optional:
    `torch.func` version is a later optimization behind the same interface.
 4. The tsmodel trains with bf16 autocast, AdamW, a cosine schedule over the episode, and
    `torch.compile` as an opt-in flag. Windows are cut on the device with `gather`.
-5. The reward scorer forwards `reward_subset_per_dataset` windows per dataset per step, in
-   batches of `score_batch_size`, under `torch.no_grad` and bf16. The full reward set is never
-   scored inside an episode.
+5. The reward scorer forwards the full reward split every step by default
+   (`reward_subset_per_dataset: null`), in batches of `score_batch_size`, under `torch.no_grad`
+   and bf16. On the default benchmark this costs 0.34 s per step for K = 4, 8 % of the step,
+   and makes the reward exact. A random subset of 128 windows per dataset gave a reward noise
+   of 0.03 against a true improvement of 0.016 per step after step 10. An integer value scores
+   that many random windows per dataset and step; use it for large benchmarks.
 6. The benchmark window sets are built once per process and kept on the device.
 7. Config validation happens at startup, before any data or weight loads.
 
