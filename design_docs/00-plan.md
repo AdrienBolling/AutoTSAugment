@@ -36,7 +36,7 @@ Success criterion:
 | 8 | Agent | SAC first, PPO second, TorchRL losses. Data collection through our own episode loop, `run_episode`. Own `Environment` contract with TorchRL and gymnasium adapters. Baselines: fixed uniform, random, CMA-ES. |
 | 9 | Config | Hydra groups `experiment/`, `agent/`, `env/` (`tsmodel/`, `augmentation/`, `benchmark/`, `featurizer/`, `reward/`), `tracker/`. Pydantic validates each component config at startup. `_target_` is the registry. |
 | 10 | Conventions | tslake rule set: ruff ALL with documented ignores, ty strict, Google docstrings, jaxtyping with opt-in beartype, pre-commit chain. Python 3.13. |
-| 11 | Tracking | `Tracker` interface: `NullTracker`, `MLflowTracker` (local `mlruns/`). Step metrics buffered on the device, flushed once per episode. DVC for keeper checkpoints, `metrics/<experiment>.json`. |
+| 11 | Tracking | `Tracker` interface: `NullTracker` (`tracker=none`), `MLflowTracker` with a local SQLite store under `tracking_uri` (`mlruns/mlflow.db` and `mlruns/artifacts/`). MLflow 3.17 refuses the plain file store. Step metrics buffered on the device, flushed once per episode. DVC for keeper checkpoints in `models/`, `metrics/<experiment>-<label>.json` and `metrics/compare.json`. |
 | 12 | Git | Bootstrap on `main`. One branch per work package in its own worktree, one pull request per branch, merged by the user. |
 
 ## 3. Architecture
@@ -94,8 +94,8 @@ src/autotsaugment/
     env/          WP4   curriculum, featurizers, rewards, scoring, history
     agents/       WP5   loop, policies, fixed, random, cmaes,
                         torchrl/{adapter,networks,sac,ppo}, gymnasium_adapter
-    tracking/     WP6   null (done), mlflow
-    experiments/  WP6   smoke, train_agent, compare
+    tracking/     WP6   null, mlflow, prefixed
+    experiments/  WP6   common, smoke, train_agent, compare
   cli             hydra entry point
 configs/          one YAML per component, `_target_` + `config:` block
 tests/            CPU by default; markers gpu, network, slow
@@ -177,12 +177,13 @@ small pull request first.
 | WP3 | tsmodel | #2 | 2026-10-26 | 74 |
 | WP4 | env | #1 | 2026-10-26 | 83 |
 | WP5 | agents | #5 | 2026-10-26 | 97 |
-| WP6 | experiments, tracking | open | no | n/a |
+| WP6 | experiments, tracking | #7 | no | 330 |
 
 Each branch count includes the tests of the bootstrap commit, so the counts overlap. Together
 on `main`, before the follow-up pull request, the CPU suite gives 275 passed. The follow-up
-pull request (`feat/core-followups`) adds the contract methods of section 3.3, tunes the
-real-run configs and brings the count to 294.
+pull request (`feat/core-followups`, #6) adds the contract methods of section 3.3, tunes the
+real-run configs and brings the count to 294. WP6 (#7) builds on #6 and adds 36 CPU tests:
+330 passed. The GPU suite (`-m gpu`) gives 9 passed.
 
 ### WP1 — data (`feat/data`, #4)
 
@@ -388,23 +389,78 @@ Files: `components/agents/{loop,policies,fixed,random,cmaes,gymnasium_adapter}.p
   `aggregate` and `scores` like `CurriculumEnv`, and `shared_target` gives one hidden target
   to all K slots for the CMA-ES tests.
 
-### WP6 — experiments and tracking (`feat/experiments`)
+### WP6 — experiments and tracking (`feat/experiments`, #7)
 
-Files: `components/tracking/mlflow.py`, `components/experiments/{smoke,train_agent,compare}.py`,
-`cli.py` completion, `tests/test_experiments.py`, `scripts/`.
+Files: `components/tracking/{mlflow,prefixed}.py`,
+`components/experiments/{common,smoke,train_agent,compare}.py`, `cli.py` completion,
+`configs/tracker/{mlflow,none}.yaml`, `configs/experiment/*.yaml`,
+`tests/test_{experiments,tracking_mlflow,configs}.py`.
 
-- `MLflowTracker`: local file store, buffered steps written with `log_batch` once per episode.
-- `SmokeExperiment`: build env, agent and tracker from the config, run `episodes` episodes
-  with the agent's policy, return the final aggregate. `uv run autotsaugment-run` with the
-  defaults must finish in seconds on the CPU.
-- `TrainAgentExperiment`: `agent.fit`, then `eval_seeds` fresh episodes with the policy,
-  the comparison skill per dataset and the aggregate per seed, the area under the aggregate
-  curve, written to `metrics/train_agent-<agent>.json`. Checkpoints under `checkpoint_dir`
-  and `dvc add` instructions in the log. Save `env.state_dict()` next to the agent
-  checkpoint, and load it into the environment before an evaluation in a new process.
-- `CompareExperiment`: the same evaluation for a list of policies, one table.
-- Tests: the smoke experiment through `hydra.compose` with `env=fake`; the metrics file has
-  the documented keys.
+- `MLflowTracker`: a `tracking_uri` without a scheme is a directory, relative to the working
+  directory (the repository root, because `hydra.job.chdir` is false). The directory holds
+  the SQLite database `mlflow.db` and `artifacts/`. MLflow 3.17 refuses the plain file store.
+  A URI with a scheme goes to MLflow unchanged. The UI:
+  `uv run mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db`.
+- `log_step` appends to a buffer and touches no tensor. `flush` moves the buffer to the host
+  with one transfer per device, then writes `log_batch` calls of at most 1000 metrics.
+  `log_params` writes the resolved config as dotted keys, 100 per call. Episode metrics go
+  under `episode/`, with the episode index as the step. A run carries the git commit as a
+  tag. A failed run ends as `FAILED`. `mlflow` is imported in the constructor only.
+- `NullTracker`: `configs/tracker/none.yaml`, selected with `tracker=none`. `tracker=null` is
+  not valid: in Hydra, `null` removes the group. A run without a tracker group also gets a
+  `NullTracker`.
+- `PrefixedTracker(tracker, prefix)`: a view that puts `prefix` before every key and leaves
+  the tracker open. The evaluation logs under `eval/`. `compare` logs each policy under
+  `<policy>/` and its fit under `<policy>/fit/`. Steps and episodes start at 0 in each phase.
+- An experiment takes `run_config` and the flat leaves of its YAML file as keyword
+  arguments. It validates the leaves into a frozen config (`SmokeConfig`, `TrainAgentConfig`,
+  `CompareConfig`) when Hydra builds it, before any data loads. `checkpoint_dir`,
+  `metrics_dir` and `checkpoint` paths are relative to the working directory.
+- `evaluate_policy(env, policy, *, seeds, tracker, root_seed, step_offset, episode_offset)`:
+  one deterministic episode per evaluation seed `s`, with the episode seed
+  `derive_seed(root_seed, "eval", s)`. Two policies on the same seeds see the same reward
+  windows. The values stay on the device until one `to_host` call. Summary keys, lower is
+  better for skill values:
+
+  | Key | Value |
+  |---|---|
+  | `comparison/aggregate/mean` | The primary metric: the comparison aggregate, mean over K, then over the seeds |
+  | `comparison/aggregate/std` | The sample standard deviation over the seeds of the K-mean; 0 for one seed |
+  | `comparison/aggregate/seed<s>` | The K-mean of evaluation seed `s` |
+  | `comparison/<dataset>/mean` | The comparison skill of one dataset, mean over K and the seeds |
+  | `curve/auc/mean` | The secondary metric: the aggregate on the reward subset, mean over the steps, K and the seeds |
+  | `return/mean` | The episode return, mean over K and the seeds |
+  | `eval/seeds`, `eval/wall_time_s` | The number of seeds, the wall time of the evaluation |
+
+- `SmokeExperiment(name, episodes)`: build the run, fit the agent, evaluate its policy on the
+  seeds `0 .. episodes - 1`. It returns the summary and `wall_time_s`. With the defaults
+  (fake env, `tracker=none`, CPU, fixed uniform agent), `uv run autotsaugment-run` takes 1.6 s.
+- `TrainAgentExperiment(name, eval_seeds, checkpoint_dir, metrics_dir, label)`: fit with the
+  run seed, save, then evaluate on `eval_seeds`. `<label>` defaults to the agent class in
+  snake case: `sac`, `ppo`, `cmaes`, `fixed_action`, `random`. The checkpoint directory
+  `checkpoint_dir/<label>/` holds `agent.pt` (`agent.save`), `agent.yaml` (the agent config
+  of the run) and `env.pt` (`env.state_dict()` after the fit, on the CPU, when it is not
+  empty). The metrics file is `metrics/<name>-<label>.json`. It adds `train/wall_time_s`,
+  `train/episodes` and `wall_time_s` to the summary.
+- Git ignores `checkpoints/`, so `dvc add` cannot track a checkpoint there. The log gives the
+  commands for a keeper: `dvc add checkpoints/train_agent/<label> -o models/<name>-<label>`,
+  `git add models/<name>-<label>.dvc models/.gitignore metrics/<name>-<label>.json`,
+  `git commit`, `dvc push`.
+- `CompareExperiment(name, eval_seeds, policies, metrics_dir)`: each entry names an agent file
+  in `configs/agent/` and an optional `checkpoint`. With a checkpoint, the agent loads it. It
+  is built from the `agent.yaml` of the checkpoint when that file exists (same `_target_`
+  as the named file, device of the run), so the networks match after command-line
+  overrides. Without a checkpoint, the agent is fitted with the run seed: instant for the
+  baselines, slow for CMA-ES and the RL agents. One environment serves all policies on the
+  same seeds. A policy with `env.pt` gets that state before its evaluation; the others get
+  the state after construction. Missing files fail when Hydra builds the experiment, and a
+  saved state that does not fit fails before the first episode. Every summary key goes under
+  `<policy>/`, with `wall_time_s`, in `metrics/<name>.json`. One table goes to the log.
+- Tests: the smoke experiment with the defaults and with `tracker=mlflow`; `train_agent` with
+  `fixed_uniform` and with CMA-ES; `compare` with the baselines and a checkpoint, with the
+  same numbers as `train_agent`; the SAC numbers of `compare` and `train_agent` are equal
+  with `env.pt` and differ without it; a CLI subprocess run; every `_target_` imports. GPU:
+  `log_step` without synchronization, `train_agent` and `compare` on CUDA.
 
 ## 6. Order of work
 
@@ -414,8 +470,11 @@ Files: `components/tracking/mlflow.py`, `components/experiments/{smoke,train_age
    (new dependencies) and `tests/conftest.py` (new fixtures). A follow-up pull request then
    adds the contract methods of section 3.3, tunes the real-run configs and updates this
    document.
-3. Wave 2: WP6 on top of the merged `main`, then the first real smoke run on the GPU with
-   `env=default experiment=smoke`.
+3. Wave 2 (done, #7): WP6 on top of the merged `main` and #6. The first real smoke run on
+   the GPU, `uv run autotsaugment-run experiment=smoke env=default device=cuda tracker=none
+   env.config.episode.epochs=3 env.config.episode.series_per_epoch=512`, ran in 25 s wall
+   time on the RTX 4080 SUPER. 22.9 s of it is inside the experiment, the first compilation
+   included. The aggregate is 1.115 after 3 small epochs.
 4. Experiment 1: `experiment=train_agent agent=sac`, `agent=cmaes`, then `experiment=compare`.
 
 ## 7. Later work, not in v1
