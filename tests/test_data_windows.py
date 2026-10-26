@@ -1,3 +1,4 @@
+import dataclasses
 import math
 from fractions import Fraction
 
@@ -12,6 +13,7 @@ from autotsaugment.components.data.windows import (
     SplitWindows,
     TooFewWindowsError,
     WindowSpec,
+    assemble_window_set,
     build_dataset_windows,
     candidate_windows,
     check_window_counts,
@@ -29,7 +31,8 @@ NAN = float("nan")
 SPEC = WindowSpec(
     context_length=8, horizon=4, season=2, stride=4, max_context_length=12, max_horizon=6
 )
-LEVELS = torch.tensor([0.1, 0.5, 0.9])
+LEVELS = (0.1, 0.5, 0.9)
+LEVEL_TENSOR = torch.tensor(LEVELS)
 
 
 def make_series(*rows: list[float]) -> SeriesArrays:
@@ -124,7 +127,7 @@ def test_forward_fill_keeps_leading_nan():
 def test_naive_scores_match_a_hand_computation():
     context = torch.tensor([[NAN, NAN, 1.0, 2.0, NAN, 4.0]])
     target = torch.tensor([[3.0, NAN, 5.0, NAN]])
-    loss, abs_sum = naive_scores(context, target, LEVELS, 2)
+    loss, abs_sum = naive_scores(context, target, LEVEL_TENSOR, 2)
     # filled context [.., 1, 2, 2, 4]; season 2 -> forecast [2, 4, 2, 4]
     forecast = torch.tensor([2.0, 4.0, 2.0, 4.0])
     expected = 0.0
@@ -132,7 +135,7 @@ def test_naive_scores_match_a_hand_computation():
         if math.isnan(y):
             continue
         error = y - forecast[step].item()
-        expected += sum(max(q * error, (q - 1) * error) for q in LEVELS.tolist())
+        expected += sum(max(q * error, (q - 1) * error) for q in LEVEL_TENSOR.tolist())
     assert loss.item() == pytest.approx(expected)
     assert abs_sum.item() == pytest.approx(8.0)
 
@@ -241,11 +244,33 @@ def test_check_window_counts_names_every_short_split():
 def test_split_windows_dict_round_trip():
     data = make_series([float(t) for t in range(200)])
     part = _build(data, "x/H")[REWARD]
-    again = SplitWindows.from_dict(part.as_dict())
+    assert part.quantile_levels == LEVELS
+    again = SplitWindows.from_dict(part.as_dict(), quantile_levels=part.quantile_levels)
     for name, tensor in part.as_dict().items():
         torch.testing.assert_close(getattr(again, name), tensor, equal_nan=True)
+    assert again.quantile_levels == LEVELS
     with pytest.raises(KeyError, match="missing window fields"):
-        SplitWindows.from_dict({"context": part.context})
+        SplitWindows.from_dict({"context": part.context}, quantile_levels=LEVELS)
+
+
+def test_assemble_window_set_carries_the_levels():
+    data = make_series([float(t) for t in range(200)])
+    parts = [_build(data, "a/H")[REWARD], _build(data, "b/H")[REWARD]]
+    window_set = assemble_window_set(
+        parts,
+        dataset_names=("a/H", "b/H"),
+        domains=("Energy", "Energy"),
+        device=torch.device("cpu"),
+    )
+    assert window_set.quantile_levels == LEVELS
+    other = dataclasses.replace(parts[1], quantile_levels=(0.25, 0.5, 0.75))
+    with pytest.raises(ValueError, match="same quantile levels"):
+        assemble_window_set(
+            [parts[0], other],
+            dataset_names=("a/H", "b/H"),
+            domains=("Energy", "Energy"),
+            device=torch.device("cpu"),
+        )
 
 
 def test_window_spec_rejects_inconsistent_lengths():

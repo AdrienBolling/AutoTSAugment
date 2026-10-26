@@ -58,15 +58,37 @@ def test_run_episode_shapes_and_logs(device: torch.device):
     }
     torch.testing.assert_close(torch.tensor(metrics["return"]), result.returns.mean())
     step_metrics = tracker.steps[0][1]
-    assert set(step_metrics) == {"reward", "distance"}
+    assert set(step_metrics) == {"reward", "distance", "aggregate", "score/fake_0", "score/fake_1"}
+    assert torch.isfinite(result.aggregate_curve).all()
+
+
+def test_run_episode_on_the_fake_env_gives_the_aggregate_curve(device: torch.device):
+    env = make_env(device)
+    result = run_episode(env, TargetPolicy(), seed=0, tracker=MemoryTracker())
+    torch.testing.assert_close(result.aggregate_curve, torch.ones(8, 4))
+    torch.testing.assert_close(result.returns, torch.zeros(4))
+    torch.testing.assert_close(result.final_skill, torch.ones(4, 2))
+    # A constant action gives a constant reward, so every step aggregate is the final skill.
+    action = ConstantActionPolicy(torch.full((3,), 0.25, device=device))
+    result = run_episode(env, action, seed=1, tracker=MemoryTracker())
+    assert (result.aggregate_curve > 1.0).all()
+    torch.testing.assert_close(result.aggregate_curve, result.final_skill[:, 0].expand(8, 4))
+
+
+class NoAggregateEnvironment(FakeEnvironment):
+    """The fake bandit without ``info["aggregate"]``, like an environment that has none."""
+
+    def step(self, action: torch.Tensor) -> StepResult:
+        result = super().step(action)
+        info = {key: value for key, value in result.info.items() if key != "aggregate"}
+        return StepResult(result.observation, result.reward, result.done, info)
 
 
 def test_run_episode_without_aggregate_gives_a_nan_curve(device: torch.device):
-    env = make_env(device)
+    env = NoAggregateEnvironment(config=make_env(device).config, device=device)
     result = run_episode(env, TargetPolicy(), seed=0, tracker=MemoryTracker())
     assert torch.isnan(result.aggregate_curve).all()
     torch.testing.assert_close(result.returns, torch.zeros(4))
-    torch.testing.assert_close(result.final_skill, torch.ones(4, 2))
 
 
 class CurriculumInfoEnvironment(FakeEnvironment):

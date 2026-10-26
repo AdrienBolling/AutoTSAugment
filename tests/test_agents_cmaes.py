@@ -17,28 +17,23 @@ from autotsaugment.core.featurizer import Observation
 from autotsaugment.core.metrics import aggregate
 
 
-class SharedTargetEnvironment(FakeEnvironment):
-    """The fake bandit with one hidden target for all K slots.
-
-    ``FakeEnvironment`` draws one target per slot. A static action cannot match K different
-    targets, so this subclass copies the target of slot 0 to every slot. The K slots of the
-    real environment are exchangeable in the same way.
-    """
+class SeedRecordingEnvironment(FakeEnvironment):
+    """The fake bandit that records the seed of every reset."""
 
     def __init__(self, *, config: FakeEnvironmentConfig, device: torch.device) -> None:
         super().__init__(config=config, device=device)
         self.seeds: list[int] = []
 
     def reset(self, *, seed: int) -> Observation:
-        super().reset(seed=seed)
         self.seeds.append(seed)
-        self._target = self._target[:1].expand_as(self._target).clone()
-        return self._observation()
+        return super().reset(seed=seed)
 
 
-def make_env(device: torch.device) -> SharedTargetEnvironment:
+def make_env(device: torch.device) -> SeedRecordingEnvironment:
+    # A static action cannot match K different targets: all K slots share one target.
     episode = EpisodeConfig(epochs=8, series_per_epoch=1, batch_envs=4)
-    return SharedTargetEnvironment(config=FakeEnvironmentConfig(episode=episode), device=device)
+    config = FakeEnvironmentConfig(episode=episode, shared_target=True)
+    return SeedRecordingEnvironment(config=config, device=device)
 
 
 def test_default_population_is_a_multiple_of_k():

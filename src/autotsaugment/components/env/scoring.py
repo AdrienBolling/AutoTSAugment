@@ -46,7 +46,9 @@ def score(model: Forecaster, windows: WindowSet, *, batch_size: int) -> tuple[Pe
     forecaster on the same windows. The naive WQL comes from ``windows.naive_loss_sum`` and
     ``windows.abs_sum`` through the same :func:`wql_per_dataset` call as the model WQL. Both
     calls use the number of levels of ``model.quantile_levels``, so the naive loss of the
-    window set must come from the same levels. Then a naive forecaster scores exactly 1.0.
+    window set must come from the same levels, ``windows.quantile_levels``. Then a naive
+    forecaster scores exactly 1.0. The function does not compare the levels, because the
+    comparison reads them on the host; ``CurriculumEnv`` compares them once, at construction.
 
     Args:
         model: The forecaster to score. Its forecast must have the horizon of ``windows``.
