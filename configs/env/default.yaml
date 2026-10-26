@@ -15,5 +15,6 @@ config:
     epochs: 50            # E: steps per episode
     series_per_epoch: 4096  # N: synthetic series per step
     batch_envs: 4         # K: tsmodels trained in lockstep
-  reward_subset_per_dataset: 128  # reward windows scored per step and dataset (null = all)
+  reward_subset_per_dataset: null  # null = score the full reward split every step (exact reward);
+                                  # an int scores that many random windows per dataset and step
   score_batch_size: 1024
