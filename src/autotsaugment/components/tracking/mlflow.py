@@ -224,11 +224,17 @@ class MLflowTracker(Tracker):
         self._status = "FAILED"
 
     def close(self) -> None:
-        """Flush, then end the run. A second call does nothing."""
+        """Flush, then end the run. A second call does nothing.
+
+        The run ends as ``FAILED`` after :meth:`mark_failed` or when the flush fails.
+        """
         if self._closed:
             return
         self._closed = True
         try:
             self.flush()
+        except BaseException:
+            self._status = "FAILED"
+            raise
         finally:
             self._client.set_terminated(self.run_id, status=self._status)

@@ -177,6 +177,12 @@ def test_close_twice_and_failed_status(store: Path):
     failed.mark_failed()
     failed.close()
     assert status(failed) == "FAILED"
+    broken = make(store)
+    broken.log_step(0, {"wide": torch.zeros(2)})  # not a scalar: the flush fails
+    with pytest.raises(RuntimeError):
+        broken.close()
+    assert status(broken) == "FAILED"
+    broken.close()
 
 
 @pytest.mark.gpu
