@@ -305,7 +305,14 @@ class FakeBenchmark(Benchmark[FakeBenchmarkConfig]):
             abs_sum=target_abs_sum(target),
             dataset_names=names,
             domains=domains,
+            quantile_levels=self.quantile_levels,
         )
+
+    @property
+    def quantile_levels(self) -> tuple[float, ...]:
+        """Return the levels of the naive loss, the levels of the default fake tsmodel."""
+        step = 0.9 / (self.LEVELS - 1)
+        return tuple(round(0.05 + i * step, 6) for i in range(self.LEVELS))
 
     @property
     def reward_windows(self) -> WindowSet:

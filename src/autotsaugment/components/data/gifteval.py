@@ -270,7 +270,6 @@ def _load_or_build(
     }
     missing = [dataset for dataset in datasets if not paths[dataset].is_file()]
     shards = _shard_paths(config, missing) if missing else {}
-    levels = torch.tensor(config.quantile_levels, dtype=torch.float32)
     known = config.context_by_freq.keys()
     budget = int(config.max_total_gb * BYTES_PER_GB)
     used: int | None = None  # bytes under root, measured after the download
@@ -302,7 +301,7 @@ def _load_or_build(
                 COMPARISON: config.comparison_windows_per_dataset,
             },
             min_windows=config.min_windows_per_split,
-            levels=levels,
+            levels=config.quantile_levels,
             seed=config.seed,
         )
         _log.info(

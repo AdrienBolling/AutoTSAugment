@@ -1,5 +1,6 @@
 """Benchmark contract: fixed windows of real data, scored on the device."""
 
+import functools
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -25,6 +26,11 @@ class WindowSet:
         abs_sum: ``sum |y|`` over the horizon per window, shape ``(n,)``.
         dataset_names: Name of each dataset, length d.
         domains: Domain tag of each dataset, length d, for example ``"Energy"``.
+        quantile_levels: The levels of ``naive_loss_sum``, length q. A tsmodel scored on the
+            set must forecast the same levels, or its skill has no meaning.
+
+    :attr:`rows_by_dataset` holds the rows of each dataset. It is computed once per instance,
+    at the first read.
     """
 
     context: Tensor
@@ -34,9 +40,10 @@ class WindowSet:
     abs_sum: Tensor
     dataset_names: tuple[str, ...]
     domains: tuple[str, ...]
+    quantile_levels: tuple[float, ...]
 
     def __post_init__(self) -> None:
-        """Validate shapes and ids."""
+        """Validate shapes, ids and levels."""
         n = self.context.shape[0]
         for name in ("target", "dataset_index", "naive_loss_sum", "abs_sum"):
             if getattr(self, name).shape[0] != n:
@@ -44,6 +51,9 @@ class WindowSet:
                 raise ValueError(msg)
         if len(self.dataset_names) != len(self.domains):
             msg = "dataset_names and domains must have the same length"
+            raise ValueError(msg)
+        if not self.quantile_levels:
+            msg = "quantile_levels must hold at least one level"
             raise ValueError(msg)
 
     @property
@@ -71,6 +81,18 @@ class WindowSet:
         """Return the device of the tensors."""
         return self.context.device
 
+    @functools.cached_property
+    def rows_by_dataset(self) -> tuple[Tensor, ...]:
+        """Return the rows of each dataset, one int64 tensor per dataset, in index order.
+
+        The tuple is computed once per instance. ``torch.nonzero`` synchronizes with the
+        host, so read this property first outside ``env.step``, for example in a constructor.
+        """
+        return tuple(
+            torch.nonzero(self.dataset_index == dataset, as_tuple=False).squeeze(-1)
+            for dataset in range(self.n_datasets)
+        )
+
     def to(self, device: torch.device | str) -> "WindowSet":
         """Return a copy with every tensor on ``device``."""
         return WindowSet(
@@ -81,6 +103,7 @@ class WindowSet:
             abs_sum=self.abs_sum.to(device),
             dataset_names=self.dataset_names,
             domains=self.domains,
+            quantile_levels=self.quantile_levels,
         )
 
     def select(self, rows: Tensor) -> "WindowSet":
@@ -93,20 +116,22 @@ class WindowSet:
             abs_sum=self.abs_sum[rows],
             dataset_names=self.dataset_names,
             domains=self.domains,
+            quantile_levels=self.quantile_levels,
         )
 
     def subset(self, per_dataset: int, *, generator: torch.Generator) -> "WindowSet":
         """Return at most ``per_dataset`` random windows of each dataset.
 
-        Datasets with fewer windows keep all of them. The result keeps the dataset order.
+        Datasets with fewer windows keep all of them. The result keeps the dataset order. The
+        rows come from :attr:`rows_by_dataset`, so only the first call synchronizes.
         """
         keep: list[Tensor] = []
-        for dataset in range(self.n_datasets):
-            rows = torch.nonzero(self.dataset_index == dataset, as_tuple=False).squeeze(-1)
+        for rows in self.rows_by_dataset:
             if rows.numel() > per_dataset:
                 perm = torch.randperm(rows.numel(), generator=generator, device=rows.device)
-                rows = rows[perm[:per_dataset]]
-            keep.append(rows)
+                keep.append(rows[perm[:per_dataset]])
+            else:
+                keep.append(rows)
         return self.select(torch.cat(keep))
 
 

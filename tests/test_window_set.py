@@ -1,3 +1,6 @@
+import dataclasses
+
+import pytest
 import torch
 
 from autotsaugment.core.benchmark import WindowSet
@@ -13,6 +16,7 @@ def make(n_per: int = 5, d: int = 3) -> WindowSet:
         abs_sum=torch.ones(n),
         dataset_names=tuple(f"d{i}" for i in range(d)),
         domains=("Energy",) * d,
+        quantile_levels=(0.1, 0.5, 0.9),
     )
 
 
@@ -35,3 +39,25 @@ def test_select_and_properties():
     assert sel.horizon == 2
     assert sel.n_datasets == 3
     torch.testing.assert_close(sel.dataset_index, torch.tensor([0, 2]))
+
+
+def test_quantile_levels_are_carried(generator: torch.Generator):
+    ws = make()
+    assert ws.quantile_levels == (0.1, 0.5, 0.9)
+    assert ws.to("cpu").quantile_levels == ws.quantile_levels
+    assert ws.select(torch.tensor([1, 2])).quantile_levels == ws.quantile_levels
+    assert ws.subset(2, generator=generator).quantile_levels == ws.quantile_levels
+    with pytest.raises(ValueError, match="at least one level"):
+        dataclasses.replace(ws, quantile_levels=())
+
+
+def test_rows_by_dataset_is_computed_once():
+    ws = make(n_per=4, d=3)
+    rows = ws.rows_by_dataset
+    assert len(rows) == 3
+    for dataset, values in enumerate(rows):
+        torch.testing.assert_close(values, torch.arange(4) + 4 * dataset)
+    assert ws.rows_by_dataset is rows
+    assert ws.to("cpu").rows_by_dataset is not rows
+    empty = make(n_per=2, d=2).select(torch.tensor([0, 1]))
+    assert [part.numel() for part in empty.rows_by_dataset] == [2, 0]

@@ -21,6 +21,7 @@ The environment never logs. Trackers belong to agents and experiments, which rea
 :attr:`StepResult.info`.
 """
 
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import fields
 from typing import Any
@@ -48,6 +49,9 @@ TRAIN_KEYS = (*(field.name for field in fields(TrainStats)), SERIES_KEY)
 
 FEATURIZER_PREFIX = "featurizer/"
 """Prefix of the featurizer keys in :meth:`CurriculumEnv.state_dict`."""
+
+LEVEL_TOLERANCE = 1e-6
+"""Largest difference of two equal quantile levels; float32 levels differ by about 1e-8."""
 
 
 class CurriculumEnvConfig(EnvironmentConfig):
@@ -102,7 +106,8 @@ class CurriculumEnv(Environment[CurriculumEnvConfig]):
 
     Raises:
         TypeError: If ``featurizer`` is a featurizer instance and not a factory.
-        ValueError: If a component lives on another device than ``device``.
+        ValueError: If a component lives on another device than ``device``, or if a tsmodel
+            forecasts other quantile levels than the benchmark window sets hold.
     """
 
     def __init__(
@@ -127,6 +132,7 @@ class CurriculumEnv(Environment[CurriculumEnvConfig]):
         self._reward = reward
         self._tsmodels = tuple(tsmodel() for _ in range(self.batch_size))
         self._check_devices()
+        self._check_quantile_levels()
         self._featurizer = featurizer(
             n_datasets=len(benchmark.dataset_names),
             action_dim=augmentation.action_space.dim,
@@ -134,11 +140,8 @@ class CurriculumEnv(Environment[CurriculumEnvConfig]):
             device=self._device,
         )
         reward_windows = benchmark.reward_windows
-        # Built once here: `torch.nonzero` synchronizes, so it must stay out of `step`.
-        self._rows_by_dataset = tuple(
-            torch.nonzero(reward_windows.dataset_index == dataset, as_tuple=False).squeeze(-1)
-            for dataset in range(reward_windows.n_datasets)
-        )
+        # Read once here: `torch.nonzero` synchronizes, so it must stay out of `step`.
+        self._rows_by_dataset = reward_windows.rows_by_dataset
         self._all_rows = torch.arange(reward_windows.n_windows, device=self._device)
         self._epoch: int | None = None
         self._augmentation_generator = make_generator(self._device, 0)
@@ -157,6 +160,32 @@ class CurriculumEnv(Environment[CurriculumEnvConfig]):
             if _canonical(device) != expected:
                 msg = f"the {name} live on {device}, but the environment device is {self._device}"
                 raise ValueError(msg)
+
+    def _check_quantile_levels(self) -> None:
+        """Raise when a tsmodel forecasts other quantile levels than the benchmark windows.
+
+        The naive loss of the windows uses the levels of the window sets, so the skill has a
+        meaning only with the same levels. The check reads the levels on the host: it runs
+        once, at construction, never in :meth:`step`.
+        """
+        sets = {
+            "reward": self._benchmark.reward_windows.quantile_levels,
+            "comparison": self._benchmark.comparison_windows.quantile_levels,
+        }
+        for i, model in enumerate(self._tsmodels):
+            found: list[float] = model.quantile_levels.detach().float().cpu().tolist()
+            for name, expected in sets.items():
+                same = len(found) == len(expected) and all(
+                    math.isclose(a, b, rel_tol=0.0, abs_tol=LEVEL_TOLERANCE)
+                    for a, b in zip(found, expected, strict=True)
+                )
+                if not same:
+                    shown = [round(level, 6) for level in found]
+                    msg = (
+                        f"tsmodel {i} forecasts the quantile levels {shown}, but the "
+                        f"{name} windows hold the naive loss of the levels {list(expected)}"
+                    )
+                    raise ValueError(msg)
 
     @property
     def device(self) -> torch.device:
@@ -198,8 +227,9 @@ class CurriculumEnv(Environment[CurriculumEnvConfig]):
     def _draw_reward_subset(self) -> tuple[Tensor, WindowSet]:
         """Return the rows of the reward subset and its windows.
 
-        Same rule as ``WindowSet.subset``, without its ``torch.nonzero``: at most
+        Same rule as ``WindowSet.subset``, on the rows read in the constructor: at most
         ``reward_subset_per_dataset`` random rows per dataset, all rows of smaller datasets.
+        The environment needs the rows for ``info``, so it does not call ``subset``.
         """
         windows = self._benchmark.reward_windows
         per_dataset = self.config.reward_subset_per_dataset

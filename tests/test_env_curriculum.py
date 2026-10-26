@@ -21,7 +21,7 @@ from autotsaugment.components.fakes import (
 )
 from autotsaugment.core.config import EpisodeConfig
 from autotsaugment.core.environment import StepResult
-from autotsaugment.core.typechecking import ActionBatch, SeriesBatchK
+from autotsaugment.core.typechecking import ActionBatch, QuantileLevels, SeriesBatchK
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 EPOCHS, SERIES, K = 5, 64, 2
@@ -45,6 +45,8 @@ def make_env(
     *,
     subset: int | None = 16,
     reward_config: ImprovementRewardConfig | None = None,
+    tsmodel: type[FakeTSModel] = FakeTSModel,
+    tsmodel_config: FakeTSModelConfig | None = None,
 ) -> CurriculumEnv:
     config = CurriculumEnvConfig(
         episode=EpisodeConfig(epochs=EPOCHS, series_per_epoch=SERIES, batch_envs=K),
@@ -55,7 +57,10 @@ def make_env(
         config=config,
         device=device,
         tsmodel=functools.partial(
-            FakeTSModel, config=FakeTSModelConfig(), device=device, episode_epochs=EPOCHS
+            tsmodel,
+            config=tsmodel_config or FakeTSModelConfig(),
+            device=device,
+            episode_epochs=EPOCHS,
         ),
         augmentation=RecordingAugmentation(config=FakeAugmentationConfig(), device=device),
         benchmark=FakeBenchmark(config=FakeBenchmarkConfig(), device=device),
@@ -242,6 +247,24 @@ def test_wrong_state_keys_are_rejected():
         env.load_state_dict({**state, "featurizer/extra": torch.zeros(1)})
     with pytest.raises(ValueError, match="missing keys"):
         env.load_state_dict({})
+
+
+class ShiftedLevelsTSModel(FakeTSModel):
+    """The fake tsmodel with the right number of levels at other values."""
+
+    @property
+    def quantile_levels(self) -> QuantileLevels:
+        return super().quantile_levels + 0.01
+
+
+def test_tsmodel_with_other_quantile_levels_is_rejected():
+    levels = list(FakeBenchmark(config=FakeBenchmarkConfig(), device="cpu").quantile_levels)
+    with pytest.raises(ValueError, match="tsmodel 0 forecasts the quantile levels") as error:
+        make_env(tsmodel_config=FakeTSModelConfig(n_levels=5))
+    assert "[0.05, 0.275, 0.5, 0.725, 0.95], but the reward windows" in str(error.value)
+    assert str(levels) in str(error.value)
+    with pytest.raises(ValueError, match="0.06, 0.1725"):
+        make_env(tsmodel=ShiftedLevelsTSModel)
 
 
 def test_components_on_another_device_are_rejected():
