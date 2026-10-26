@@ -334,10 +334,14 @@ class FakeEnvironmentConfig(EnvironmentConfig):
     Attributes:
         action_dim: Dimension of the action.
         n_datasets: Width of the score vectors.
+        shared_target: Draw one hidden target per episode for all K environments. A static
+            action can then be optimal in every slot, as in the real environment, where the K
+            slots are exchangeable.
     """
 
     action_dim: int = 3
     n_datasets: int = 2
+    shared_target: bool = False
 
 
 class FakeEnvironment(Environment[FakeEnvironmentConfig]):
@@ -345,7 +349,16 @@ class FakeEnvironment(Environment[FakeEnvironmentConfig]):
 
     The observation holds the progress and the hidden target, so a policy can reach the
     optimum. The reward is ``-||action - target||^2``. The skill on evaluate is the mean
-    reward of the episode mapped to ``(0, 2)``.
+    reward of the episode mapped to ``[1, 2)``; lower is better.
+
+    ``StepResult.info`` holds, each with a leading k, the layout of the curriculum
+    environment for the loop and the trackers:
+
+    - ``aggregate`` ``(k,)``: ``2 * sigmoid(-4 * reward)``, the map of :meth:`evaluate`
+      applied to the reward of the step;
+    - ``scores`` ``(k, d)``: the aggregate repeated over the ``n_datasets`` columns, so
+      their geometric mean is the aggregate;
+    - ``distance`` ``(k,)``: ``||action - target||``.
     """
 
     def __init__(self, *, config: FakeEnvironmentConfig, device: torch.device | str) -> None:
@@ -393,12 +406,22 @@ class FakeEnvironment(Environment[FakeEnvironmentConfig]):
         return {"progress": progress.clone(), "target": self._target.clone()}
 
     def reset(self, *, seed: int) -> Observation:
-        """Draw a new hidden target per environment."""
+        """Draw a new hidden target per environment, or one for all with ``shared_target``."""
         generator = make_generator(self._device, seed)
-        self._target = self._space.sample(self.batch_size, generator=generator) * 0.5
+        draws = 1 if self.config.shared_target else self.batch_size
+        target = self._space.sample(draws, generator=generator) * 0.5
+        self._target = target.expand(self.batch_size, -1).clone()
         self._epoch = 0
         self._return = torch.zeros(self.batch_size, device=self._device)
         return self._observation()
+
+    @staticmethod
+    def _skill(reward: Tensor) -> Tensor:
+        """Map a reward (or a mean reward), at most 0, to a skill in ``[1, 2)``."""
+        return 2.0 * torch.sigmoid(-reward * 4.0)
+
+    def _per_dataset(self, skill: Tensor) -> Tensor:
+        return skill.unsqueeze(-1).expand(-1, self.config.n_datasets).clone()
 
     def step(self, action: Tensor) -> StepResult:
         """Pay the negative squared distance to the target."""
@@ -409,13 +432,18 @@ class FakeEnvironment(Environment[FakeEnvironmentConfig]):
         done = torch.full(
             (self.batch_size,), self._epoch >= self.episode_length, device=self._device
         )
-        return StepResult(self._observation(), reward, done, {"distance": (-reward).sqrt()})
+        aggregate = self._skill(reward)
+        info = {
+            "aggregate": aggregate,
+            "scores": self._per_dataset(aggregate),
+            "distance": (-reward).sqrt(),
+        }
+        return StepResult(self._observation(), reward, done, info)
 
     def evaluate(self) -> Tensor:
-        """Return a skill in ``(0, 2)`` per dataset, lower when the return is higher."""
+        """Return a skill in ``[1, 2)`` per dataset, lower when the return is higher."""
         mean_return = self._return / max(self._epoch, 1)
-        skill = 2.0 * torch.sigmoid(-mean_return * 4.0)
-        return skill.unsqueeze(-1).expand(-1, self.config.n_datasets).clone()
+        return self._per_dataset(self._skill(mean_return))
 
 
 class ConstantPolicy:

@@ -36,7 +36,8 @@ class EpisodeResult:
         final_skill: Skill per dataset on the comparison set from ``env.evaluate()``,
             shape ``(k, d)``. Lower is better.
         aggregate_curve: Aggregate skill on the reward subset after each step, shape
-            ``(E, k)``. NaN when the environment does not report ``info["aggregate"]``.
+            ``(E, k)``. ``CurriculumEnv`` and ``FakeEnvironment`` report it in
+            ``info["aggregate"]``; NaN for an environment that does not.
         steps: Number of steps of the episode, E.
     """
 

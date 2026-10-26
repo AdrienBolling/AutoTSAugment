@@ -117,6 +117,39 @@ def test_fake_environment_episode(device: torch.device):
     torch.testing.assert_close(skill, torch.ones(3, 2))
 
 
+def test_fake_environment_info_matches_evaluate(device: torch.device):
+    config = FakeEnvironmentConfig(
+        episode=EpisodeConfig(epochs=3, series_per_epoch=1, batch_envs=4), n_datasets=3
+    )
+    env = FakeEnvironment(config=config, device=device)
+    obs = env.reset(seed=0)
+    action = obs["target"] + 0.2
+    for _ in range(3):
+        result = env.step(action)
+        info = result.info
+        assert info["aggregate"].shape == (4,)
+        assert info["scores"].shape == (4, 3)
+        assert info["distance"].shape == (4,)
+        torch.testing.assert_close(info["aggregate"], 2.0 * torch.sigmoid(-4.0 * result.reward))
+        torch.testing.assert_close(info["scores"], info["aggregate"][:, None].expand(4, 3))
+        torch.testing.assert_close(aggregate(info["scores"][0]), info["aggregate"][0])
+    # The reward is the same at every step, so the comparison skill is the step aggregate.
+    torch.testing.assert_close(env.evaluate(), info["scores"])
+
+
+def test_fake_environment_shared_target(device: torch.device):
+    episode = EpisodeConfig(epochs=2, series_per_epoch=1, batch_envs=4)
+    own = FakeEnvironment(config=FakeEnvironmentConfig(episode=episode), device=device)
+    shared = FakeEnvironment(
+        config=FakeEnvironmentConfig(episode=episode, shared_target=True), device=device
+    )
+    own_target = own.reset(seed=3)["target"]
+    shared_target = shared.reset(seed=3)["target"]
+    assert not torch.equal(own_target[0], own_target[1])
+    torch.testing.assert_close(shared_target, shared_target[:1].expand(4, -1))
+    assert not torch.equal(shared.reset(seed=4)["target"], shared_target)
+
+
 def test_fake_environment_has_an_empty_state(device: torch.device):
     env = FakeEnvironment(config=FakeEnvironmentConfig(), device=device)
     assert env.state_dict() == {}
