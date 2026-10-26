@@ -1,7 +1,9 @@
 # r_t = agg_{t-1} - agg_t (+ weighted training-quality terms, zero by default).
+# A decrease of the aggregate is a positive reward; the quality terms are penalties.
 _target_: autotsaugment.components.env.rewards.ImprovementReward
 config:
   _target_: autotsaugment.components.env.rewards.ImprovementRewardConfig
   scale: 1.0
-  loss_variance_weight: 0.0
-  loss_slope_weight: 0.0
+  loss_variance_weight: 0.0  # penalty on the variance of the loss over loss_window epochs
+  loss_slope_weight: 0.0     # penalty on the slope of the loss over loss_window epochs
+  loss_window: 5             # epochs used for the variance and the slope
