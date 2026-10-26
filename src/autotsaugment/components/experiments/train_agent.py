@@ -3,8 +3,10 @@
 Outputs. Relative paths are relative to the working directory, the repository root under
 Hydra, not to the Hydra output directory:
 
-- ``<checkpoint_dir>/<label>/``: the agent state (``agent.pt``, from ``agent.save``) and the
-  agent config of the run (``agent.yaml``). The compare experiment loads both.
+- ``<checkpoint_dir>/<label>/``: the agent state (``agent.pt``, from ``agent.save``), the
+  agent config of the run (``agent.yaml``) and the environment state (``env.pt``, from
+  ``env.state_dict()``, when it is not empty). The compare experiment loads all three. The
+  environment state is saved after the fit and before the evaluation.
 - ``<metrics_dir>/<name>-<label>.json``: the metrics, for ``dvc metrics``.
 - The tracker run: the training episodes without a prefix, the evaluation episodes under
   ``eval/``, the checkpoint directory and the metrics file as artifacts, and the summary.
@@ -31,6 +33,7 @@ from autotsaugment.components.experiments.common import (
     experiment_config,
     log_summary,
     resolve_path,
+    save_env_state,
     synchronize,
 )
 from autotsaugment.components.tracking.prefixed import PrefixedTracker
@@ -136,6 +139,7 @@ class TrainAgentExperiment(Experiment):
                 _log.info("train_agent: overwrite the checkpoint in %s", checkpoint)
             run.agent.save(checkpoint)
             OmegaConf.save(self.run_config.agent, checkpoint / AGENT_CONFIG_FILE)
+            save_env_state(run.env, checkpoint)
             tracker.log_artifact(checkpoint)
 
             summary = evaluate_policy(

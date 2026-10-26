@@ -5,7 +5,9 @@ checkpoint directory that ``train_agent`` wrote:
 
 - With a checkpoint, the agent loads it. When the directory holds ``agent.yaml``, the agent is
   built from that file, so the networks match the trained ones also after command-line
-  overrides. Its ``_target_`` must equal the one of the named config file.
+  overrides. Its ``_target_`` must equal the one of the named config file. When the directory
+  holds ``env.pt``, the environment loads that state (the featurizer moments) before the
+  evaluation of the policy, so the policy sees the observations it was trained on.
 - Without a checkpoint, the agent is fitted on the environment with the run seed. This is
   instant for the training-free baselines (``fixed_uniform``, ``random``). CMA-ES and the RL
   agents train here for their full ``config.episodes``, which is allowed but slow: prefer
@@ -13,8 +15,11 @@ checkpoint directory that ``train_agent`` wrote:
 
 Every agent config and every checkpoint is checked when the experiment is built, before any
 data loads or any episode runs. One environment instance serves all policies, and every policy
-runs on the same ``eval_seeds``, so the reward windows are the same at every step. The
-environment config of the run must be the one the checkpoints were trained with.
+runs on the same ``eval_seeds``, so the reward windows are the same at every step. Each
+policy without ``env.pt`` starts from the environment state after construction, so the order of
+the policies does not change the results. The environment config of the run must be the one
+the checkpoints were trained with. Every saved environment state is loaded once on the new
+environment before the first episode, so a state that does not fit fails early.
 
 Outputs: ``<metrics_dir>/<name>.json`` with every summary key under ``<policy>/`` (keys in
 :mod:`autotsaugment.components.experiments.common`) and ``wall_time_s``; one table at INFO; in
@@ -42,6 +47,7 @@ from autotsaugment.components.experiments.common import (
     closing_tracker,
     evaluate_policy,
     experiment_config,
+    load_env_state,
     log_summary,
     prefixed,
     resolve_path,
@@ -201,14 +207,23 @@ class CompareExperiment(Experiment):
         tracker = start_tracker(self.run_config, exclude=("agent",))
         with closing_tracker(tracker):
             agents = {name: build_agent(node) for name, node in self._nodes.items()}
+            states = {}
             for name, entry in self.config.policies.items():
                 if entry.checkpoint is not None:
-                    agents[name].load(resolve_path(entry.checkpoint))
+                    checkpoint = resolve_path(entry.checkpoint)
+                    agents[name].load(checkpoint)
+                    states[name] = load_env_state(checkpoint)
             env = build_env(self.run_config)
+            initial = env.state_dict()
+            for state in states.values():
+                if state is not None:
+                    env.load_state_dict(state)
             rows: dict[str, dict[str, float]] = {}
             metrics: dict[str, float] = {}
             for name, entry in self.config.policies.items():
                 agent = agents[name]
+                state = states.get(name)
+                env.load_state_dict(initial if state is None else state)
                 if entry.checkpoint is None:
                     fit_tracker = PrefixedTracker(tracker, f"{name}/fit/")
                     policy = agent.fit(env, tracker=fit_tracker, seed=seed)

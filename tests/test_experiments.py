@@ -15,11 +15,14 @@ from omegaconf import DictConfig
 from autotsaugment.components.experiments.common import (
     AGENT_CONFIG_FILE,
     CONFIG_DIR,
+    ENV_STATE_FILE,
     EVAL_PREFIX,
     build_tracker,
     closing_tracker,
     evaluate_policy,
     experiment_config,
+    load_env_state,
+    save_env_state,
 )
 from autotsaugment.components.experiments.compare import comparison_table
 from autotsaugment.components.experiments.smoke import SmokeConfig
@@ -113,7 +116,7 @@ def test_evaluate_policy_summarizes_every_seed():
     assert [step for step, _ in tracker.steps] == list(range(10, 16))
     again = evaluate_policy(env, policy, seeds=(4, 7), tracker=NullTracker(), root_seed=1)
     for key in summary_keys((4, 7), names) - {"eval/wall_time_s"}:
-        assert again.metrics[key] == pytest.approx(summary.metrics[key], nan_ok=True), key
+        assert again.metrics[key] == summary.metrics[key], key
 
 
 def test_evaluate_policy_with_one_seed_has_zero_std():
@@ -121,8 +124,6 @@ def test_evaluate_policy_with_one_seed_has_zero_std():
     policy = ConstantPolicy(torch.zeros(3), env.batch_size)
     summary = evaluate_policy(env, policy, seeds=[0], tracker=NullTracker(), root_seed=0)
     assert summary.metrics["comparison/aggregate/std"] == 0.0
-    # FakeEnvironment reports no info["aggregate"], so its curve is NaN.
-    assert math.isnan(summary.metrics.pop("curve/auc/mean"))
     assert all(math.isfinite(value) for value in summary.metrics.values())
 
 
@@ -275,6 +276,9 @@ def test_train_agent_writes_the_metrics_and_the_checkpoint(tmp_path: Path):
     checkpoint = tmp_path / "checkpoints" / "fixed_action"
     assert (checkpoint / "agent.pt").is_file()
     assert (checkpoint / AGENT_CONFIG_FILE).is_file()
+    state = load_env_state(checkpoint)  # the fake env has a stats featurizer with moments
+    assert state is not None
+    assert all(key.startswith("featurizer/") for key in state)
 
 
 def test_train_agent_with_cmaes_and_a_label(tmp_path: Path):
@@ -350,17 +354,55 @@ def test_compare_checks_the_entries_before_any_episode(tmp_path: Path, trained: 
     assert not (tmp_path / "metrics" / "compare.json").exists()
 
 
-def test_compare_rebuilds_the_agent_from_the_checkpoint_config(tmp_path: Path):
-    train(tmp_path, "agent=sac", "agent.config.episodes=1", "agent.config.hidden_sizes=[8]")
+def test_compare_reproduces_a_trained_sac_policy(tmp_path: Path):
+    # Small networks: compare must rebuild them from agent.yaml, not from configs/agent/sac.yaml.
+    trained = train(
+        tmp_path,
+        "agent=sac",
+        "agent.config.episodes=2",
+        "agent.config.hidden_sizes=[8]",
+        "experiment.eval_seeds=[0,1]",
+    )
     checkpoint = tmp_path / "checkpoints" / "sac"
+    assert (checkpoint / ENV_STATE_FILE).is_file()
     cfg = compare(
         tmp_path,
-        "experiment.eval_seeds=[0]",
+        "experiment.eval_seeds=[0,1]",
         "+experiment.policies.sac.agent=sac",
         f"+experiment.policies.sac.checkpoint={checkpoint}",
     )
-    metrics = build(cfg).run()  # the default hidden sizes (256, 256) would not load
-    assert math.isfinite(metrics["sac/comparison/aggregate/mean"])
+    metrics = build(cfg).run()
+    # uniform and random run first and move the featurizer moments; env.pt restores them.
+    for key in summary_keys((0, 1)) - {"eval/wall_time_s"}:
+        assert metrics[f"sac/{key}"] == pytest.approx(trained[key]), key
+    (checkpoint / ENV_STATE_FILE).unlink()
+    without = build(cfg).run()
+    assert without["sac/comparison/aggregate/mean"] != pytest.approx(
+        trained["comparison/aggregate/mean"]
+    )
+
+
+def test_compare_rejects_a_foreign_env_state_before_any_episode(
+    tmp_path: Path, trained: tuple[Path, Any]
+):
+    checkpoint, _ = trained
+    torch.save({"featurizer/unknown": torch.zeros(2)}, checkpoint / ENV_STATE_FILE)
+    cfg = compare(
+        tmp_path,
+        "+experiment.policies.trained.agent=fixed_uniform",
+        f"+experiment.policies.trained.checkpoint={checkpoint}",
+    )
+    with pytest.raises(ValueError, match="unknown"):
+        build(cfg).run()
+    assert not (tmp_path / "metrics" / "compare.json").exists()
+
+
+def test_an_empty_env_state_removes_a_stale_file(tmp_path: Path):
+    stale = tmp_path / ENV_STATE_FILE
+    stale.write_bytes(b"old")
+    assert save_env_state(fake_env(), tmp_path) is None
+    assert not stale.exists()
+    assert load_env_state(tmp_path) is None
 
 
 # --- command line ----------------------------------------------------------------------------

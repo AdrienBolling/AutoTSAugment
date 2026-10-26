@@ -55,6 +55,9 @@ EVAL_PREFIX = "eval/"
 AGENT_CONFIG_FILE = "agent.yaml"
 """File in a checkpoint directory with the agent config of the run that wrote it."""
 
+ENV_STATE_FILE = "env.pt"
+"""File in a checkpoint directory with ``env.state_dict()``, when that state is not empty."""
+
 
 class ExperimentConfig(ComponentConfig):
     """Config shared by all experiments.
@@ -251,6 +254,37 @@ def synchronize(device: torch.device) -> None:
     """Wait for the queued work on ``device``, so a wall time measures the work itself."""
     if device.type == "cuda":
         torch.cuda.synchronize(device)
+
+
+def save_env_state(env: Environment[Any], directory: Path) -> Path | None:
+    """Write ``env.state_dict()`` to ``directory/env.pt``, on the CPU, when it is not empty.
+
+    The state holds what a saved policy needs to see the same observations, for example the
+    normalization moments of the featurizer. An empty state removes an ``env.pt`` that an
+    earlier run left in ``directory``.
+
+    Returns:
+        The file, or ``None`` when the state is empty.
+    """
+    path = directory / ENV_STATE_FILE
+    state = env.state_dict()
+    if not state:
+        path.unlink(missing_ok=True)
+        return None
+    directory.mkdir(parents=True, exist_ok=True)
+    torch.save({key: value.detach().cpu() for key, value in state.items()}, path)
+    return path
+
+
+def load_env_state(directory: Path) -> dict[str, Tensor] | None:
+    """Read the state that :func:`save_env_state` wrote, on the CPU, or ``None`` without one.
+
+    ``env.load_state_dict`` moves the tensors to the device of the environment.
+    """
+    path = directory / ENV_STATE_FILE
+    if not path.is_file():
+        return None
+    return torch.load(path, map_location="cpu", weights_only=True)
 
 
 @dataclass(frozen=True)
