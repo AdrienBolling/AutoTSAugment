@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from safetensors.torch import save_file
 from timestral import TimestralForecaster
 from timestral.loading import load_model
+from timestral.model import TimestralModel
 
 from autotsaugment.components.tsmodel.network import UnivariateDecoder
 from autotsaugment.components.tsmodel.schedule import build_scheduler, warmup_cosine
@@ -384,6 +385,18 @@ def test_lora_state_dict_round_trip(
     torch.testing.assert_close(target.forecast(context, 10), source.forecast(context, 10))
 
 
+def test_construction_leaves_the_global_random_state_unchanged(
+    tiny_checkpoint: Path, device: torch.device
+):
+    state = torch.random.get_rng_state()
+    TimestralBare(config=bare_config(), device=device, episode_epochs=1)
+    assert torch.equal(torch.random.get_rng_state(), state)
+    TimestralLora(config=lora_config(tiny_checkpoint), device=device, episode_epochs=1)
+    assert torch.equal(torch.random.get_rng_state(), state)
+    TimestralModel(bare_config().timestral_config)  # the check sees a random init
+    assert not torch.equal(torch.random.get_rng_state(), state)
+
+
 def test_lora_rejects_a_checkpoint_with_another_patch_size(
     tiny_checkpoint: Path, device: torch.device
 ):
@@ -412,7 +425,10 @@ def cuda() -> Iterator[torch.device]:
 @pytest.mark.filterwarnings("ignore:Synchronization debug mode:UserWarning")
 def test_bare_5m_epoch_on_the_gpu(cuda: torch.device):
     config = TimestralBareConfig(architecture=yaml_architecture())
+    states = (torch.random.get_rng_state(), torch.cuda.get_rng_state(cuda))
     model = TimestralBare(config=config, device=cuda, episode_epochs=50)
+    assert torch.equal(torch.random.get_rng_state(), states[0])
+    assert torch.equal(torch.cuda.get_rng_state(cuda), states[1])
     generator = make_generator(cuda, 0)
     series = noisy_sines(512, 1024, generator)
     torch.cuda.synchronize()
@@ -470,7 +486,10 @@ def test_pretrained_5m_beats_seasonal_naive_on_a_sine(cuda: torch.device):
 @pytest.mark.filterwarnings("ignore:Synchronization debug mode:UserWarning")
 @pytest.mark.network
 def test_pretrained_5m_lora_epoch_on_the_gpu(cuda: torch.device):
+    states = (torch.random.get_rng_state(), torch.cuda.get_rng_state(cuda))
     model = TimestralLora(config=TimestralLoraConfig(), device=cuda, episode_epochs=10)
+    assert torch.equal(torch.random.get_rng_state(), states[0])
+    assert torch.equal(torch.cuda.get_rng_state(cuda), states[1])
     generator = make_generator(cuda, 0)
     series = noisy_sines(256, 1024, generator)
     first = model.train_epoch(series, generator=generator)

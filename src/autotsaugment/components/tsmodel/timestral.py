@@ -375,7 +375,8 @@ class TimestralBare(TimestralBase[TimestralBareConfig]):
     ) -> None:
         device = torch.device(device)
         self._architecture = config.timestral_config
-        model = TimestralModel(self._architecture).to(device)
+        with torch.random.fork_rng(devices=[]):  # reset(seed=0) replaces these weights
+            model = TimestralModel(self._architecture).to(device)
         model.transformer.rope.rebuild_inv_freq()
         super().__init__(config=config, model=model, device=device, episode_epochs=episode_epochs)
         self.reset(seed=0)
@@ -413,7 +414,8 @@ class TimestralLora(TimestralBase[TimestralLoraConfig]):
         self, *, config: TimestralLoraConfig, device: torch.device | str, episode_epochs: int
     ) -> None:
         device = torch.device(device)
-        model = load_model(config.checkpoint, device=device)
+        with torch.random.fork_rng(devices=[]):  # load_model runs the random init on the CPU
+            model = load_model(config.checkpoint, device=device)
         architecture = model.config
         if (architecture.patch_size, architecture.block_size) != (
             config.patch_size,
