@@ -6,12 +6,15 @@ import torch
 from autotsaugment.components.agents.cmaes import (
     CMAESAgent,
     CMAESAgentConfig,
+    candidate_fitness,
     default_population,
 )
 from autotsaugment.components.agents.loop import episode_seed
 from autotsaugment.components.fakes import FakeEnvironment, FakeEnvironmentConfig, MemoryTracker
 from autotsaugment.core.config import EpisodeConfig
+from autotsaugment.core.environment import StepResult
 from autotsaugment.core.featurizer import Observation
+from autotsaugment.core.metrics import aggregate
 
 
 class SharedTargetEnvironment(FakeEnvironment):
@@ -99,3 +102,50 @@ def test_cmaes_with_k_not_dividing_the_population(device: torch.device):
     agent = CMAESAgent(config=config, device=device)
     policy = agent.fit(env, tracker=MemoryTracker(), seed=0)
     assert env.action_space.contains(policy(env.reset(seed=0)))
+
+
+# Arithmetic means: 1.0 > 0.9, so they prefer B. Geometric means: 0.436 < 0.9, so they prefer A.
+SKILL_A = (0.1, 1.9)
+SKILL_B = (0.9, 0.9)
+
+
+class TwoProfileEnvironment(FakeEnvironment):
+    """Comparison skill A for a positive first action value, skill B otherwise."""
+
+    def __init__(self, *, config: FakeEnvironmentConfig, device: torch.device) -> None:
+        super().__init__(config=config, device=device)
+        self.first_values: list[torch.Tensor] = []
+        self._last = torch.zeros(self.batch_size, config.action_dim, device=device)
+
+    def step(self, action: torch.Tensor) -> StepResult:
+        self._last = action.clone()
+        self.first_values.append(action[:, 0].clone())
+        return super().step(action)
+
+    def evaluate(self) -> torch.Tensor:
+        a = torch.tensor(SKILL_A, device=self.device)
+        b = torch.tensor(SKILL_B, device=self.device)
+        return torch.where(self._last[:, :1] > 0, a, b)
+
+
+def test_candidate_fitness_is_the_geometric_mean():
+    skill = torch.tensor([SKILL_A, SKILL_B])
+    fitness = candidate_fitness(skill)
+    assert skill[0].mean() > skill[1].mean()
+    assert fitness[0] < fitness[1]
+    torch.testing.assert_close(fitness, torch.stack([aggregate(skill[0]), aggregate(skill[1])]))
+    assert torch.isfinite(candidate_fitness(torch.tensor([[0.0, 1.0]]))).all()
+
+
+def test_cmaes_ranks_candidates_by_the_geometric_mean(device: torch.device):
+    episode = EpisodeConfig(epochs=2, series_per_epoch=1, batch_envs=4)
+    env = TwoProfileEnvironment(config=FakeEnvironmentConfig(episode=episode), device=device)
+    config = CMAESAgentConfig(episodes=2, population=8, sigma0=0.5)
+    agent = CMAESAgent(config=config, device=device)
+    agent.fit(env, tracker=MemoryTracker(), seed=0)
+    first = torch.cat(env.first_values)
+    assert (first > 0).any()
+    assert (first <= 0).any()
+    # The best candidate has the profile with the lower geometric mean, A.
+    assert agent.action is not None
+    assert agent.action[0] > 0

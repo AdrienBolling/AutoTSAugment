@@ -2,8 +2,9 @@
 
 If the CMA-ES action matches the RL curriculum, the sequential decision adds nothing. Each
 generation evaluates its candidates in groups of K, one episode per group: candidate j stays
-constant for all E steps in lockstep environment j. The fitness of a candidate is the mean over
-datasets of its comparison skill from ``env.evaluate()``. Lower is better, and CMA-ES minimizes.
+constant for all E steps in lockstep environment j. The fitness of a candidate is the geometric
+mean over datasets of its comparison skill from ``env.evaluate()``, the aggregate of the primary
+metric (:func:`autotsaugment.core.metrics.aggregate`). Lower is better, and CMA-ES minimizes.
 
 ``cma`` works in NumPy on the CPU. The agent moves the fitness of the K candidates to the host
 once per episode, and the box bounds once per call to :meth:`CMAESAgent.fit`.
@@ -18,7 +19,7 @@ import numpy as np
 import torch
 from pydantic import Field
 
-from autotsaugment.components.agents.loop import episode_seed, run_episode
+from autotsaugment.components.agents.loop import episode_seed, geometric_mean, run_episode
 from autotsaugment.components.agents.policies import (
     ConstantActionPolicy,
     SlotActionPolicy,
@@ -53,6 +54,25 @@ class CMAESAgentConfig(AgentConfig):
     population: int | None = Field(default=None, ge=2)
     fixed_seed: bool = True
     final: Literal["best", "mean"] = "best"
+
+
+SKILL_FLOOR = 1e-12
+"""Lower clamp of the skill before the logarithm, so a zero skill keeps a finite fitness."""
+
+
+def candidate_fitness(final_skill: torch.Tensor) -> torch.Tensor:
+    """Return the fitness of each slot: the geometric mean of its skill over datasets.
+
+    This is the aggregate of the primary metric, so CMA-ES ranks candidates as the experiment
+    does. The skill is positive; values below :data:`SKILL_FLOOR` are clamped to it.
+
+    Args:
+        final_skill: Comparison skill per slot and dataset, shape ``(k, d)``.
+
+    Returns:
+        Shape ``(k,)``. Lower is better.
+    """
+    return geometric_mean(final_skill.clamp_min(SKILL_FLOOR))
 
 
 def default_population(action_dim: int, batch_envs: int) -> int:
@@ -160,7 +180,7 @@ class CMAESAgent(Agent[CMAESAgentConfig]):
             episode=episode,
             deterministic=True,
         )
-        fitness = result.final_skill.mean(dim=-1).detach().cpu().tolist()
+        fitness = candidate_fitness(result.final_skill.detach()).cpu().tolist()
         return [float(value) for value in fitness[: len(group)]]
 
     @property
