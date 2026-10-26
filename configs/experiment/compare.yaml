@@ -1,12 +1,24 @@
 # @package _global_
 # Evaluate several saved or training-free policies on the comparison set, same seeds, same
-# budget. The headline table of v1: fixed_uniform vs random vs cmaes vs sac.
+# budget, one environment. The headline table of v1: fixed_uniform vs random vs cmaes vs sac.
+# Writes metrics/compare.json. The `agent` group of the run is not used.
+#   uv run autotsaugment-run experiment=compare
+# Each policy: `agent` names a file in configs/agent/. With `checkpoint` (a directory that
+# experiment=train_agent wrote), the agent loads it. Without it, the agent is fitted here:
+# instant for fixed_uniform and random, slow for cmaes, sac and ppo.
 experiment:
   _target_: autotsaugment.components.experiments.compare.CompareExperiment
   name: compare
   eval_seeds: [0, 1, 2]
+  metrics_dir: metrics
   policies:
     uniform:
       agent: fixed_uniform
     random:
       agent: random
+    # cmaes:
+    #   agent: cmaes
+    #   checkpoint: checkpoints/train_agent/cmaes
+    # sac:
+    #   agent: sac
+    #   checkpoint: checkpoints/train_agent/sac
