@@ -264,6 +264,7 @@ class TimestralBase[ConfigT: TimestralConfigBase](TSModel[ConfigT]):
             context_patches=context_patches,
             patch_size=ps,
             minimum_scale=self._model.config.minimum_scale,
+            stabilize_with_global=self._model.config.stabilize_with_global,
             use_asinh=self._model.config.use_asinh,
         )
 

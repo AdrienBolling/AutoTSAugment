@@ -22,6 +22,7 @@ def horizon_frames(
     context_patches: int,
     patch_size: int,
     minimum_scale: float,
+    stabilize_with_global: bool,
 ) -> tuple[Tensor, Tensor]:
     """Return the frame of every horizon step of a full window.
 
@@ -32,13 +33,15 @@ def horizon_frames(
         context_patches: Patches of the context, L. The horizon is the rest of the window.
         patch_size: Time steps per patch.
         minimum_scale: Lower bound of the scale.
+        stabilize_with_global: The flag of the architecture, as ``TimestralModel.scale``
+            uses it.
 
     Returns:
         ``(loc, scale)``, each shape ``(n, t - L * patch_size)``. Horizon patch ``j`` holds
         the causal statistics of the window up to the end of patch ``L + j - 1``.
     """
     loc, scale = causal_patch_loc_scale(
-        window, observed, patch_size, minimum_scale, stabilize_with_global=False
+        window, observed, patch_size, minimum_scale, stabilize_with_global
     )
     start = (context_patches - 1) * patch_size
     stop = window.shape[-1] - patch_size
@@ -54,6 +57,7 @@ def normalized_pinball_loss(
     context_patches: int,
     patch_size: int,
     minimum_scale: float,
+    stabilize_with_global: bool,
     use_asinh: bool,
 ) -> Tensor:
     """Return the mean pinball loss of normalized quantiles against a full window.
@@ -67,6 +71,8 @@ def normalized_pinball_loss(
         context_patches: Patches of the context, L.
         patch_size: Time steps per patch.
         minimum_scale: Lower bound of the scale.
+        stabilize_with_global: The flag of the architecture, as ``TimestralModel.scale``
+            uses it.
         use_asinh: Whether the model squashes normalized values with ``asinh``.
 
     Returns:
@@ -78,6 +84,7 @@ def normalized_pinball_loss(
         context_patches=context_patches,
         patch_size=patch_size,
         minimum_scale=minimum_scale,
+        stabilize_with_global=stabilize_with_global,
     )
     start = context_patches * patch_size
     target_observed = observed[:, start:]

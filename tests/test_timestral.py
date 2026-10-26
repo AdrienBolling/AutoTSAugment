@@ -165,6 +165,7 @@ def test_warmup_cosine_schedule():
         ({"horizon_length": 4}, "horizon_length"),
         ({"horizon_length": 72}, "longer than one decode block"),
         ({"architecture": {**TINY, "unknown": 1}}, "unknown config keys"),
+        ({"architecture": {**TINY, "stabilize_with_global": True}}, "stabilize_with_global"),
     ],
 )
 def test_bare_config_rejects_bad_windows(overrides: dict[str, Any], message: str):

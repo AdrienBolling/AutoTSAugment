@@ -209,7 +209,7 @@ class UnivariateDecoder:
         low = inputs.masked_fill(~observed, float("inf")).amin(-1, keepdim=True)
         high, low = torch.nan_to_num(high, neginf=0.0), torch.nan_to_num(low, posinf=0.0)
         _, scale = causal_patch_loc_scale(
-            inputs, observed, self.patch_size, config.minimum_scale, stabilize_with_global=False
+            inputs, observed, self.patch_size, config.minimum_scale, config.stabilize_with_global
         )
         margin = scale[:, -1:] * QUANTILE_CAP_K
         return quantiles.clamp((low - margin).unsqueeze(-1), (high + margin).unsqueeze(-1))
