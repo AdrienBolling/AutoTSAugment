@@ -405,6 +405,45 @@ def test_an_empty_env_state_removes_a_stale_file(tmp_path: Path):
     assert load_env_state(tmp_path) is None
 
 
+@pytest.mark.gpu
+def test_train_agent_and_compare_on_the_gpu(tmp_path: Path):
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    gpu = ("env=fake", "device=cuda", "tracker=mlflow", f"tracker.tracking_uri={tmp_path / 'ml'}")
+    checkpoints, metrics_dir = tmp_path / "checkpoints", tmp_path / "metrics"
+    trained = build(
+        run_config(
+            tmp_path,
+            "experiment=train_agent",
+            *gpu,
+            "agent=sac",
+            "agent.config.episodes=1",
+            "experiment.eval_seeds=[0]",
+            f"experiment.checkpoint_dir={checkpoints}",
+            f"experiment.metrics_dir={metrics_dir}",
+        )
+    ).run()
+    state = load_env_state(checkpoints / "sac")
+    assert state is not None
+    assert all(value.device.type == "cpu" for value in state.values())
+    compared = build(
+        run_config(
+            tmp_path,
+            "experiment=compare",
+            *gpu,
+            "experiment.eval_seeds=[0]",
+            f"experiment.metrics_dir={metrics_dir}",
+            "+experiment.policies.sac.agent=sac",
+            f"+experiment.policies.sac.checkpoint={checkpoints / 'sac'}",
+        )
+    ).run()
+    assert compared["sac/comparison/aggregate/mean"] == pytest.approx(
+        trained["comparison/aggregate/mean"]
+    )
+    assert all(math.isfinite(value) for value in compared.values())
+    torch.cuda.empty_cache()
+
+
 # --- command line ----------------------------------------------------------------------------
 
 
