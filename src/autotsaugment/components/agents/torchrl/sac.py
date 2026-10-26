@@ -13,10 +13,10 @@ the buffer holds one batch.
 """
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 import torch
-from pydantic import Field
+from pydantic import Field, model_validator
 from torch import Tensor
 from torchrl.data import Bounded, LazyTensorStorage, ReplayBuffer
 from torchrl.objectives import SACLoss, SoftUpdate
@@ -76,6 +76,17 @@ class SACAgentConfig(AgentConfig):
     warmup_steps: int = Field(default=200, ge=0)
     updates_per_step: int = Field(default=1, ge=0)
     target_entropy: float | Literal["auto"] = "auto"
+
+    @model_validator(mode="after")
+    def _check_replay_capacity(self) -> Self:
+        """Require a buffer that can hold one batch, or SAC would never update."""
+        if self.replay_capacity < self.batch_size:
+            msg = (
+                f"replay_capacity ({self.replay_capacity}) must be at least batch_size "
+                f"({self.batch_size}): a smaller buffer never holds one batch, so SAC never updates"
+            )
+            raise ValueError(msg)
+        return self
 
 
 class _SACLearner:

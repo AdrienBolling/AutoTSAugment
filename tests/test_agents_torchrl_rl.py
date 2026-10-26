@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from pydantic import ValidationError
 
 from autotsaugment.components.agents.loop import episode_seed, run_episode
 from autotsaugment.components.agents.policies import ConstantActionPolicy
@@ -94,6 +95,13 @@ def small_sac(**overrides: object) -> SACAgentConfig:
     }
     values.update(overrides)
     return SACAgentConfig.model_validate(values)
+
+
+def test_sac_config_needs_a_buffer_of_one_batch():
+    with pytest.raises(ValidationError, match="replay_capacity"):
+        SACAgentConfig(replay_capacity=8, batch_size=16)
+    config = SACAgentConfig(replay_capacity=16, batch_size=16)
+    assert config.replay_capacity == config.batch_size
 
 
 def test_sac_smoke(device: torch.device, tmp_path: Path):
