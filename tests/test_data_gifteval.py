@@ -4,6 +4,7 @@ Every value encodes its position: ``value = 10000 * series + time``, so a test c
 which series and which time steps a window holds.
 """
 
+import logging
 import math
 import re
 import shutil
@@ -22,9 +23,11 @@ from autotsaugment.components.data import download as download_module
 from autotsaugment.components.data import gifteval as gifteval_module
 from autotsaugment.components.data.arrow import read_series
 from autotsaugment.components.data.download import (
+    BYTES_PER_GB,
     BudgetExceededError,
     HubFile,
     UnknownFrequencyError,
+    directory_size,
     hub_dir,
     list_local_files,
 )
@@ -496,6 +499,32 @@ def test_shards_of_another_repository_are_not_reused(root: Path):
         GiftEvalBenchmark(
             config=make_config(root, "ett1/H", repo_id="other/GiftEval"), device="cpu"
         )
+
+
+def test_cache_write_is_skipped_over_the_budget(
+    root: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+):
+    held = directory_size(root)  # the local shards; no cache yet
+    budget = (held + 1000) / BYTES_PER_GB  # room for less than one cache file
+    with caplog.at_level(logging.WARNING, logger="autotsaugment.components.data.gifteval"):
+        benchmark = GiftEvalBenchmark(
+            config=make_config(root, "ett1/H", max_total_gb=budget), device="cpu"
+        )
+    assert benchmark.reward_windows.n_windows == 16  # the windows work in memory
+    assert benchmark.comparison_windows.n_windows == 4
+    assert not (root / "cache").exists()
+    assert directory_size(root) == held
+    (message,) = [record.getMessage() for record in caplog.records]
+    assert message.startswith(f"ett1/H: cache not written: {root} holds {held / 1e6:.3f} MB")
+    assert f"more than max_total_gb = {budget:.3f} GB" in message
+    # the next build reads the shards again, then writes the cache within a larger budget
+    calls: list[object] = []
+    monkeypatch.setattr(
+        gifteval_module, "read_series", lambda paths: calls.append(paths) or read_series(paths)
+    )
+    GiftEvalBenchmark(config=make_config(root, "ett1/H"), device="cpu")
+    assert len(calls) == 1
+    assert len(list((root / "cache").iterdir())) == 1
 
 
 # --- config --------------------------------------------------------------------------------

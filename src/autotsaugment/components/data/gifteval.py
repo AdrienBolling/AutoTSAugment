@@ -7,7 +7,9 @@ Build order, once per process:
    Arrow read.
 3. The other dataset ids read their shards from ``root/hub/<repo>/<revision>``. Shards that
    are not there come from the Hub, after a size plan that must fit ``max_total_gb``.
-4. The windows of each dataset are cut, scored and written to the cache.
+4. The windows of each dataset are cut, scored and written to the cache. A cache write that
+   would take everything under ``root`` above ``max_total_gb`` is skipped with a warning; the
+   windows then stay in memory only.
 5. A dataset with fewer than ``min_windows_per_split`` windows in a split raises
    :class:`~autotsaugment.components.data.windows.TooFewWindowsError`, also from the cache.
 6. The per-dataset windows are concatenated in config order and moved to the device.
@@ -22,9 +24,17 @@ import torch
 from pydantic import Field, field_validator, model_validator
 
 from autotsaugment.components.data.arrow import read_series
-from autotsaugment.components.data.cache import cache_key, cache_path, load_windows, save_windows
+from autotsaugment.components.data.cache import (
+    cache_file_bytes,
+    cache_key,
+    cache_path,
+    load_windows,
+    save_windows,
+)
 from autotsaugment.components.data.download import (
+    BYTES_PER_GB,
     DatasetId,
+    directory_size,
     download,
     find_local_sources,
     hub_dir,
@@ -262,6 +272,8 @@ def _load_or_build(
     shards = _shard_paths(config, missing) if missing else {}
     levels = torch.tensor(config.quantile_levels, dtype=torch.float32)
     known = config.context_by_freq.keys()
+    budget = int(config.max_total_gb * BYTES_PER_GB)
+    used: int | None = None  # bytes under root, measured after the download
     parts: list[dict[str, SplitWindows]] = []
     for dataset in datasets:
         path = paths[dataset]
@@ -293,15 +305,29 @@ def _load_or_build(
             levels=levels,
             seed=config.seed,
         )
-        save_windows(path, str(dataset), windows)
         _log.info(
-            "%s: %d series, %d reward and %d comparison windows, cached in %s",
+            "%s: %d series, %d reward and %d comparison windows",
             dataset,
             data.n_series,
             windows[REWARD].n_windows,
             windows[COMPARISON].n_windows,
-            path,
         )
+        used = directory_size(config.root) if used is None else used
+        needed = cache_file_bytes(windows)
+        if used + needed > budget:
+            _log.warning(
+                "%s: cache not written: %s holds %.3f MB and the cache needs %.3f MB, more "
+                "than max_total_gb = %.3f GB; the windows stay in memory only",
+                dataset,
+                config.root,
+                used / 1e6,
+                needed / 1e6,
+                budget / BYTES_PER_GB,
+            )
+        else:
+            save_windows(path, str(dataset), windows)
+            used += path.stat().st_size
+            _log.info("%s: cached in %s", dataset, path)
         parts.append(windows)
     return parts
 

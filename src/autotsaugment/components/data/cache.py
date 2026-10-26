@@ -19,6 +19,7 @@ from autotsaugment.components.data.windows import SPLITS, SplitWindows
 
 CACHE_DIR: Final = "cache"
 CACHE_VERSION: Final = 1
+FORMAT_ALLOWANCE_BYTES: Final = 64 * 1024  # torch.save adds about 6 kB to the tensor bytes
 
 
 class CacheFormatError(ValueError):
@@ -38,6 +39,20 @@ def cache_key(fields: Mapping[str, object]) -> str:
 def cache_path(root: Path, stem: str, key: str) -> Path:
     """Return ``root/cache/<stem>__<key>.pt``, with ``stem = "<name>__<freq>"``."""
     return root / CACHE_DIR / f"{stem}__{key}.pt"
+
+
+def cache_file_bytes(windows: Mapping[str, SplitWindows]) -> int:
+    """Return an upper bound of the size of the cache file of ``windows``, in bytes.
+
+    The bound is the byte size of every tensor plus :data:`FORMAT_ALLOWANCE_BYTES` for the
+    file format.
+    """
+    tensor_bytes = sum(
+        tensor.numel() * tensor.element_size()
+        for split in SPLITS
+        for tensor in windows[split].as_dict().values()
+    )
+    return tensor_bytes + FORMAT_ALLOWANCE_BYTES
 
 
 def save_windows(path: Path, dataset_id: str, windows: Mapping[str, SplitWindows]) -> None:
