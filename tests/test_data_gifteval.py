@@ -43,6 +43,7 @@ NAN = float("nan")
 CODE = 10000
 CONFIGS = Path(__file__).resolve().parents[1] / "configs" / "env" / "benchmark"
 PINNED_REVISION = "30841734ac5cfddbd0c3bad6d09d2b6b32becbb0"
+REPO_ID = "Salesforce/GiftEval"  # the default repo_id of the config
 ETT1_LENGTHS = (2000, 1500)  # two items of two variates each
 COVID_LENGTHS = (400, 300, 250, 330)  # series 3 is all NaN
 COVID_NAN = range(96, 160)  # two whole reward targets of series 0
@@ -119,12 +120,12 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def root(tmp_path: Path) -> Path:
-    write_hub(hub_dir(tmp_path / "root", None))
+    write_hub(hub_dir(tmp_path / "root", REPO_ID, None))
     return tmp_path / "root"
 
 
 def shard(root: Path, directory: str) -> Path:
-    return hub_dir(root, None) / directory / "data-00000-of-00001.arrow"
+    return hub_dir(root, REPO_ID, None) / directory / "data-00000-of-00001.arrow"
 
 
 def make_config(root: Path, *datasets: str, **fields: object) -> GiftEvalBenchmarkConfig:
@@ -425,7 +426,7 @@ def test_cache_key_covers_the_window_fields(
 
 
 def test_missing_frequency_lists_the_available_ones(root: Path, monkeypatch: pytest.MonkeyPatch):
-    listing = list_local_files(hub_dir(root, None))
+    listing = list_local_files(hub_dir(root, REPO_ID, None))
     monkeypatch.setattr(download_module, "list_hub_files", lambda repo_id, revision: listing)
     with pytest.raises(UnknownFrequencyError, match=r"ett1 has the frequencies \['D', 'H'\]"):
         GiftEvalBenchmark(config=make_config(root, "ett1/15T"), device="cpu")
@@ -476,7 +477,7 @@ def test_missing_shards_are_planned_and_downloaded_at_the_revision(
         )
     assert calls == []
     benchmark = GiftEvalBenchmark(config=make_config(root, "ett1/H", **pinned), device="cpu")
-    local = root / "hub" / PINNED_REVISION
+    local = root / "hub" / "Salesforce--GiftEval" / PINNED_REVISION
     assert listings == [PINNED_REVISION, PINNED_REVISION]
     assert calls == [(PINNED_REVISION, ["ett1/H/data-00000-of-00001.arrow"], local)]
     assert (local / "ett1/H/data-00000-of-00001.arrow").is_file()
@@ -484,7 +485,17 @@ def test_missing_shards_are_planned_and_downloaded_at_the_revision(
     # shards of another revision are not reused: main has no local copy yet
     shutil.rmtree(root / "cache")
     GiftEvalBenchmark(config=make_config(root, "ett1/H"), device="cpu")
-    assert calls[-1] == (None, ["ett1/H/data-00000-of-00001.arrow"], root / "hub" / "main")
+    main = root / "hub" / "Salesforce--GiftEval" / "main"
+    assert calls[-1] == (None, ["ett1/H/data-00000-of-00001.arrow"], main)
+
+
+def test_shards_of_another_repository_are_not_reused(root: Path):
+    GiftEvalBenchmark(config=make_config(root, "ett1/H"), device="cpu")  # local shards
+    # same root, same relative shard paths, another repository: the Hub must be listed
+    with pytest.raises(AssertionError, match="network access"):
+        GiftEvalBenchmark(
+            config=make_config(root, "ett1/H", repo_id="other/GiftEval"), device="cpu"
+        )
 
 
 # --- config --------------------------------------------------------------------------------

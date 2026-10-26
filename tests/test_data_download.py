@@ -130,7 +130,7 @@ def write_bytes(path: Path, size: int) -> None:
 
 
 def test_plan_counts_present_shards_and_existing_bytes(tmp_path: Path):
-    write_bytes(hub_dir(tmp_path, None) / "ett1/H/data-00000-of-00001.arrow", 100)
+    write_bytes(hub_dir(tmp_path, "r", None) / "ett1/H/data-00000-of-00001.arrow", 100)
     write_bytes(tmp_path / "cache" / "other.pt", 30)
     plan = plan_download(
         repo_id="r",
@@ -214,20 +214,35 @@ def test_download_requests_exactly_the_missing_shards(
                     "jena_weather/10T/data-00000-of-00002.arrow",
                     "jena_weather/10T/data-00001-of-00002.arrow",
                 ],
-                "local_dir": tmp_path / "hub" / "abc123",
+                "local_dir": tmp_path / "hub" / "r" / "abc123",
             },
         )
     ]
 
 
 def test_find_local_sources_needs_complete_shards_of_the_revision(tmp_path: Path):
-    write_bytes(hub_dir(tmp_path, "abc123") / "ett1/H/data-00000-of-00001.arrow", 10)
-    write_bytes(hub_dir(tmp_path, "abc123") / "jena_weather/10T/data-00000-of-00002.arrow", 10)
-    found = find_local_sources([ETT1_H, JENA_10T, COVID_D], tmp_path, KNOWN, "abc123")
+    local = hub_dir(tmp_path, "org/repo", "abc123")
+    write_bytes(local / "ett1/H/data-00000-of-00001.arrow", 10)
+    write_bytes(local / "jena_weather/10T/data-00000-of-00002.arrow", 10)
+    found = find_local_sources(
+        [ETT1_H, JENA_10T, COVID_D], tmp_path, KNOWN, repo_id="org/repo", revision="abc123"
+    )
     assert set(found) == {ETT1_H}
-    assert find_local_sources([ETT1_H], tmp_path, KNOWN, None) == {}
-    assert hub_dir(tmp_path, None) == tmp_path / "hub" / "main"
-    assert hub_dir(tmp_path, "refs/pr/1") == tmp_path / "hub" / "refs--pr--1"
+    assert find_local_sources([ETT1_H], tmp_path, KNOWN, repo_id="org/repo", revision=None) == {}
+    assert hub_dir(tmp_path, "org/repo", None) == tmp_path / "hub" / "org--repo" / "main"
+    assert hub_dir(tmp_path, "org/repo", "refs/pr/1") == (
+        tmp_path / "hub" / "org--repo" / "refs--pr--1"
+    )
+
+
+def test_find_local_sources_ignores_the_shards_of_another_repository(tmp_path: Path):
+    write_bytes(hub_dir(tmp_path, "org/repo", "abc123") / "ett1/H/data-00000-of-00001.arrow", 10)
+    assert set(
+        find_local_sources([ETT1_H], tmp_path, KNOWN, repo_id="org/repo", revision="abc123")
+    ) == {ETT1_H}
+    assert (
+        find_local_sources([ETT1_H], tmp_path, KNOWN, repo_id="other/repo", revision="abc123") == {}
+    )
 
 
 def load_script() -> ModuleType:
@@ -291,7 +306,7 @@ def test_network_covid_deaths_end_to_end(tmp_path: Path):
     )
     assert plan.download_bytes == plan.sources[0].size > 0
     download(plan)
-    local = hub_dir(tmp_path, REVISION) / plan.missing[0].path
+    local = hub_dir(tmp_path, "Salesforce/GiftEval", REVISION) / plan.missing[0].path
     assert local.stat().st_size == plan.missing[0].size
 
     # The series have 212 steps: at reward_fraction 0.85 the comparison part has 29 steps,

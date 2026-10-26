@@ -5,8 +5,8 @@ Build order, once per process:
 1. The config validates every dataset id before any data loads.
 2. Each dataset id with a cache file under ``root/cache`` loads from it: no network and no
    Arrow read.
-3. The other dataset ids read their shards from ``root/hub/<revision>``. Shards that are not
-   there come from the Hub, after a size plan that must fit ``max_total_gb``.
+3. The other dataset ids read their shards from ``root/hub/<repo>/<revision>``. Shards that
+   are not there come from the Hub, after a size plan that must fit ``max_total_gb``.
 4. The windows of each dataset are cut, scored and written to the cache.
 5. A dataset with fewer than ``min_windows_per_split`` windows in a split raises
    :class:`~autotsaugment.components.data.windows.TooFewWindowsError`, also from the cache.
@@ -91,8 +91,8 @@ class GiftEvalBenchmarkConfig(BenchmarkConfig):
     """Config of :class:`GiftEvalBenchmark`.
 
     Attributes:
-        root: Data root. Shards go to ``root/hub/<revision>``, window caches to
-            ``root/cache``.
+        root: Data root. Shards go to ``root/hub/<repo>/<revision>`` (``<repo>`` is
+            ``repo_id`` with ``/`` replaced by ``--``), window caches to ``root/cache``.
         repo_id: Hugging Face dataset repository.
         revision: Commit sha (or branch or tag) of the repository; None is the main branch.
             The YAML files pin a commit sha, so the data cannot change under a run.
@@ -311,7 +311,9 @@ def _shard_paths(
 ) -> dict[DatasetId, tuple[Path, ...]]:
     """Return the local shard files of each dataset id, downloaded first when missing."""
     known = config.context_by_freq.keys()
-    sources = find_local_sources(datasets, config.root, known, config.revision)
+    sources = find_local_sources(
+        datasets, config.root, known, repo_id=config.repo_id, revision=config.revision
+    )
     absent = [dataset for dataset in datasets if dataset not in sources]
     if absent:
         plan = plan_download(
@@ -326,7 +328,7 @@ def _shard_paths(
             _log.info("download plan: %s", line)
         download(plan)
         sources.update({source.dataset: source for source in plan.sources})
-    local = hub_dir(config.root, config.revision)
+    local = hub_dir(config.root, config.repo_id, config.revision)
     return {
         dataset: tuple(local / shard.path for shard in sources[dataset].shards)
         for dataset in datasets
