@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from autotsaugment.components.fakes import (
@@ -114,6 +115,14 @@ def test_fake_environment_episode(device: torch.device):
     skill = env.evaluate()
     assert skill.shape == (3, 2)
     torch.testing.assert_close(skill, torch.ones(3, 2))
+
+
+def test_fake_environment_has_an_empty_state(device: torch.device):
+    env = FakeEnvironment(config=FakeEnvironmentConfig(), device=device)
+    assert env.state_dict() == {}
+    env.load_state_dict({})
+    with pytest.raises(ValueError, match="has no state"):
+        env.load_state_dict({"featurizer/x": torch.zeros(1)})
 
 
 def test_fake_environment_uniform_action_is_zero(device: torch.device):

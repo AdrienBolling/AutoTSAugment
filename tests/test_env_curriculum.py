@@ -210,6 +210,40 @@ def test_actions_are_clipped_and_checked():
         env.step(torch.zeros(K + 1, 4))
 
 
+def test_state_round_trip_through_torch_save(tmp_path: Path):
+    trained = make_env()
+    for seed in (0, 1):
+        run_episode(trained, constant_action(0.3), seed=seed)
+    state = trained.state_dict()
+    assert state
+    assert all(key.startswith("featurizer/") for key in state)
+    path = tmp_path / "env_state.pt"
+    torch.save(state, path)
+    loaded = torch.load(path, map_location="cpu", weights_only=True)
+    restored, fresh = make_env(), make_env()
+    restored.load_state_dict(loaded)
+    observations = [env.reset(seed=5) for env in (trained, restored, fresh)]
+    from_trained, from_restored, from_fresh = observations
+    for name in trained.observation_spec:
+        torch.testing.assert_close(from_restored[name], from_trained[name])
+    assert not torch.allclose(from_fresh["reward_vector"], from_trained["reward_vector"])
+    action = constant_action(MATCHED)
+    first, second = trained.step(action), restored.step(action)
+    for name in trained.observation_spec:
+        torch.testing.assert_close(second.observation[name], first.observation[name])
+
+
+def test_wrong_state_keys_are_rejected():
+    env = make_env()
+    state = env.state_dict()
+    with pytest.raises(ValueError, match="prefix"):
+        env.load_state_dict({**state, "tsmodel/weights": torch.zeros(1)})
+    with pytest.raises(ValueError, match="unknown keys"):
+        env.load_state_dict({**state, "featurizer/extra": torch.zeros(1)})
+    with pytest.raises(ValueError, match="missing keys"):
+        env.load_state_dict({})
+
+
 def test_components_on_another_device_are_rejected():
     benchmark = FakeBenchmark(config=FakeBenchmarkConfig(), device="cpu")
     with pytest.raises(ValueError, match="tsmodel 0"):

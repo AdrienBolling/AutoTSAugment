@@ -6,6 +6,7 @@ and gymnasium.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import torch
@@ -58,6 +59,11 @@ class Environment[ConfigT: EnvironmentConfig](ABC):
     :meth:`uniform_action` gives the reference action of the augmentation method. For
     KernelSynth it is all zeros, the Chronos recipe. The fixed baseline of every experiment
     uses it.
+
+    :meth:`state_dict` and :meth:`load_state_dict` carry the state a saved policy needs to
+    reproduce its observations, for example the normalization moments of the featurizer. The
+    experiments save it next to the agent checkpoint. An environment without such state keeps
+    the defaults: an empty state.
     """
 
     config: ConfigT
@@ -118,3 +124,22 @@ class Environment[ConfigT: EnvironmentConfig](ABC):
 
         Called once at the end of an episode. Never used for the reward.
         """
+
+    def state_dict(self) -> dict[str, Tensor]:
+        """Return the state a saved policy needs to reproduce its observations.
+
+        The experiments save it next to the agent checkpoint. The default is empty.
+        """
+        return {}
+
+    def load_state_dict(self, state: Mapping[str, Tensor]) -> None:
+        """Restore the state that :meth:`state_dict` returned, on :attr:`device`.
+
+        The default accepts only an empty state.
+
+        Raises:
+            ValueError: If ``state`` does not match the state of this environment.
+        """
+        if state:
+            msg = f"{type(self).__name__} has no state, got the keys {sorted(state)}"
+            raise ValueError(msg)

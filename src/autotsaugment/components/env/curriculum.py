@@ -21,7 +21,7 @@ The environment never logs. Trackers belong to agents and experiments, which rea
 :attr:`StepResult.info`.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import fields
 from typing import Any
 
@@ -45,6 +45,9 @@ SERIES_KEY = "series"
 
 TRAIN_KEYS = (*(field.name for field in fields(TrainStats)), SERIES_KEY)
 """Keys of ``EpochRecord.train``: the :class:`TrainStats` fields, then the series count."""
+
+FEATURIZER_PREFIX = "featurizer/"
+"""Prefix of the featurizer keys in :meth:`CurriculumEnv.state_dict`."""
 
 
 class CurriculumEnvConfig(EnvironmentConfig):
@@ -84,6 +87,8 @@ class CurriculumEnv(Environment[CurriculumEnvConfig]):
     - ``action`` ``(k, a)``, the clipped action;
     - ``reward_rows`` ``(k, m)``, int64, the rows of the reward set scored in the step. All
       k rows are equal, because all tsmodels use the same subset.
+
+    :meth:`state_dict` holds the state of the featurizer under the prefix ``featurizer/``.
 
     Args:
         config: The environment config.
@@ -327,3 +332,28 @@ class CurriculumEnv(Environment[CurriculumEnvConfig]):
         """
         scores, _ = self._score_all(self._benchmark.comparison_windows)
         return scores
+
+    def state_dict(self) -> dict[str, Tensor]:
+        """Return the state of the featurizer, each key with the prefix ``featurizer/``.
+
+        A saved policy needs it to see the same normalized observations in a new process.
+        """
+        return {
+            f"{FEATURIZER_PREFIX}{key}": value
+            for key, value in self._featurizer.state_dict().items()
+        }
+
+    def load_state_dict(self, state: Mapping[str, Tensor]) -> None:
+        """Restore the state that :meth:`state_dict` returned, on :attr:`device`.
+
+        Raises:
+            ValueError: If a key has no ``featurizer/`` prefix, or if the featurizer rejects
+                its state.
+        """
+        foreign = sorted(key for key in state if not key.startswith(FEATURIZER_PREFIX))
+        if foreign:
+            msg = f"unknown environment state keys {foreign}; the prefix is {FEATURIZER_PREFIX!r}"
+            raise ValueError(msg)
+        self._featurizer.load_state_dict(
+            {key.removeprefix(FEATURIZER_PREFIX): value for key, value in state.items()}
+        )
