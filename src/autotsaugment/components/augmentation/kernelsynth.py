@@ -62,13 +62,19 @@ from autotsaugment.core.typechecking import Action, ActionBatch, SeriesBatchK, c
 JITTER_GROWTH = 10.0
 """Factor of the jitter from one factorization pass to the next."""
 
+MAX_KERNELS_BOUND = 8
+"""Largest valid ``max_kernels``. See :class:`KernelSynthConfig`."""
+
 
 class KernelSynthConfig(AugmentationConfig):
     """Config of :class:`KernelSynth`.
 
     Attributes:
         series_length: Length of every series, in time steps.
-        max_kernels: Largest number of bank kernels in one composed kernel.
+        max_kernels: Largest number of bank kernels in one composed kernel, in ``1..8``. The
+            bound keeps the composed Gram matrix inside the float32 range: a product of
+            ``m`` copies of ``DotProduct(sigma_0=10)`` has entries near ``101**m``, which
+            overflows at ``m = 20``. At ``m = 8`` the entries stay near ``1e16``.
         logit_bound: Bound of every action logit. The action box is
             ``[-logit_bound, logit_bound]``.
         jitter: Jitter of the first factorization pass, relative to the mean diagonal of the
@@ -79,7 +85,7 @@ class KernelSynthConfig(AugmentationConfig):
     """
 
     series_length: int = Field(default=1024, ge=2)
-    max_kernels: int = Field(default=5, ge=1)
+    max_kernels: int = Field(default=5, ge=1, le=MAX_KERNELS_BOUND)
     logit_bound: float = Field(default=4.0, gt=0.0)
     jitter: float = Field(default=1e-4, gt=0.0)
     max_jitter_retries: int = Field(default=3, ge=0)

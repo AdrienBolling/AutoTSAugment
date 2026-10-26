@@ -7,10 +7,12 @@ import hydra.utils
 import pytest
 import torch
 from omegaconf import OmegaConf
+from pydantic import ValidationError
 from torch import Tensor
 
 from autotsaugment.components.augmentation.bank import BANK_SIZE, KERNEL_NAMES, gram_matrices, grid
 from autotsaugment.components.augmentation.kernelsynth import (
+    MAX_KERNELS_BOUND,
     KernelSynth,
     KernelSynthConfig,
     compose,
@@ -101,6 +103,31 @@ def test_max_kernels_sets_the_count_dimensions(max_kernels: int):
     series = method.sample(method.uniform_action().expand(2, -1), 4, generator=seeded(0))
     assert series.shape == (2, 4, LENGTH)
     assert torch.isfinite(series).all()
+
+
+def test_max_kernels_above_the_bound_is_rejected():
+    with pytest.raises(ValidationError, match="less than or equal to 8"):
+        KernelSynthConfig(max_kernels=MAX_KERNELS_BOUND + 1)
+
+
+def test_worst_case_product_at_the_kernel_bound_is_finite():
+    # DotProduct(sigma_0=10) has the largest entries of the bank (100 + x x' <= 101). A product
+    # of MAX_KERNELS_BOUND copies is the largest composed Gram matrix that the config allows.
+    largest = "23_linear_10"
+    assert gram_matrices(LENGTH).amax(dim=(1, 2)).argmax() == KERNEL_NAMES.index(largest)
+    bound = MAX_KERNELS_BOUND
+    method = make(logit_bound=ONE_HOT_BOUND, max_kernels=bound)
+    action = one_hot(method, largest, count=bound)
+    action[-1] = ONE_HOT_BOUND  # every operator is a product
+    structure = method._draw_structure(action[None], 64, generator=seeded(11))
+    assert (structure.counts == bound).all()
+    assert (structure.kernels == KERNEL_NAMES.index(largest)).all()
+    assert structure.mul.all()
+    series = method.sample(action[None], 64, generator=seeded(11))
+    assert series.dtype == torch.float32
+    assert torch.isfinite(series).all()
+    assert method.last_stage is not None
+    assert (method.last_stage <= method.config.max_jitter_retries).all()  # not the fallback
 
 
 def test_hydra_builds_the_method_from_the_config_file():
