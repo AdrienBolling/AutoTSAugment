@@ -116,6 +116,14 @@ def test_every_output_has_the_documented_shape():
     assert recorded(env)[0].shape == (K, SERIES, 64)
 
 
+def test_uniform_action_is_the_augmentation_uniform_action():
+    env = make_env()
+    action = env.uniform_action()
+    assert action.shape == (env.action_space.dim,)
+    assert action.device == env.device
+    torch.testing.assert_close(action, env._augmentation.uniform_action())
+
+
 def test_done_only_at_the_last_step():
     env = make_env()
     results = run_episode(env, constant_action(0.3))

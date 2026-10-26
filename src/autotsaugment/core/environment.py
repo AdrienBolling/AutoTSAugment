@@ -54,6 +54,10 @@ class Environment[ConfigT: EnvironmentConfig](ABC):
 
     All tensors live on :attr:`device`. Every episode has exactly
     ``config.episode.epochs`` steps, so ``done`` is True for all k at the last step.
+
+    :meth:`uniform_action` gives the reference action of the augmentation method. For
+    KernelSynth it is all zeros, the Chronos recipe. The fixed baseline of every experiment
+    uses it.
     """
 
     config: ConfigT
@@ -77,6 +81,14 @@ class Environment[ConfigT: EnvironmentConfig](ABC):
     @abstractmethod
     def action_space(self) -> BoxSpace:
         """Return the action space of the augmentation method."""
+
+    @abstractmethod
+    def uniform_action(self) -> Tensor:
+        """Return the reference action of the augmentation method, shape ``(a,)``.
+
+        For KernelSynth this is all zeros, the Chronos recipe. The action lives on
+        :attr:`device` and lies inside :attr:`action_space`.
+        """
 
     @property
     @abstractmethod

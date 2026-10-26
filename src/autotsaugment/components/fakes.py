@@ -365,6 +365,10 @@ class FakeEnvironment(Environment[FakeEnvironmentConfig]):
         """Return the box."""
         return self._space
 
+    def uniform_action(self) -> Tensor:
+        """Return zeros, shape ``(action_dim,)``."""
+        return torch.zeros(self.config.action_dim, device=self._device)
+
     @property
     def observation_spec(self) -> ObservationSpec:
         """Return the two entries."""

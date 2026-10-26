@@ -116,6 +116,13 @@ def test_fake_environment_episode(device: torch.device):
     torch.testing.assert_close(skill, torch.ones(3, 2))
 
 
+def test_fake_environment_uniform_action_is_zero(device: torch.device):
+    env = FakeEnvironment(config=FakeEnvironmentConfig(action_dim=5), device=device)
+    action = env.uniform_action()
+    torch.testing.assert_close(action, torch.zeros(5))
+    assert env.action_space.contains(action.unsqueeze(0))
+
+
 def test_memory_tracker_flushes_once_per_episode(device: torch.device):
     tracker = MemoryTracker()
     for step in range(3):

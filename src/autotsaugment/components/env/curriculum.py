@@ -163,6 +163,10 @@ class CurriculumEnv(Environment[CurriculumEnvConfig]):
         """Return the action space of the augmentation method."""
         return self._augmentation.action_space
 
+    def uniform_action(self) -> Tensor:
+        """Return the uniform action of the augmentation method, shape ``(a,)``."""
+        return self._augmentation.uniform_action()
+
     @property
     def observation_spec(self) -> ObservationSpec:
         """Return the shape of each observation entry, without the leading k."""
