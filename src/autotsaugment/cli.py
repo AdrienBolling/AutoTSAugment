@@ -1,4 +1,9 @@
-"""Command-line entry point: ``autotsaugment-run experiment=... agent=... env=...``."""
+"""Command-line entry point: ``autotsaugment-run experiment=... agent=... env=...``.
+
+Hydra composes ``configs/run.yaml``. The entry point validates the run-level leaves, builds the
+experiment of ``cfg.experiment``, runs it, and writes its metrics to ``metrics.json`` in the
+Hydra output directory (``outputs/<date>/<time>/`` by default).
+"""
 
 import logging
 from pathlib import Path
@@ -6,12 +11,17 @@ from pathlib import Path
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
+from autotsaugment.components.experiments.common import CONFIG_DIR
 from autotsaugment.core.config import RunConfig
 from autotsaugment.core.experiment import Experiment, write_metrics
 
 _log = logging.getLogger(__name__)
 
-CONFIG_PATH = str(Path(__file__).resolve().parents[2] / "configs")
+CONFIG_PATH = str(CONFIG_DIR)
+"""The Hydra config directory, ``configs/`` at the repository root."""
+
+METRICS_FILE = "metrics.json"
+"""Name of the metrics file in the Hydra output directory."""
 
 
 def validate(cfg: DictConfig) -> RunConfig:
@@ -29,8 +39,10 @@ def main(cfg: DictConfig) -> None:
         msg = f"cfg.experiment must build an Experiment, got {type(experiment).__name__}"
         raise TypeError(msg)
     metrics = experiment.run()
-    write_metrics(Path(run.output_dir) / "metrics.json", metrics)
+    path = Path(run.output_dir) / METRICS_FILE
+    write_metrics(path, metrics)
     _log.info("metrics: %s", metrics)
+    _log.info("metrics written to %s", path)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 """Fixed-action baseline: the same action at every step of every episode.
 
-With no configured action, the agent uses the uniform action of the augmentation method, which
-for KernelSynth is the Chronos recipe, the baseline of experiment 1.
+With no configured action, the agent uses ``env.uniform_action()``, the uniform action of the
+augmentation method. For KernelSynth it is the Chronos recipe, the baseline of experiment 1.
 """
 
 from pathlib import Path

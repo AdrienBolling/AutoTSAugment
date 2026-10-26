@@ -1,0 +1,4 @@
+# No tracking: every call is dropped. Select it with `tracker=none`. (`tracker=null` is not a
+# group option in Hydra: null removes the group. Without a tracker group, the experiments also
+# use this tracker.)
+_target_: autotsaugment.components.tracking.null.NullTracker

@@ -1,7 +1,7 @@
 """Policies without learned parameters, and helpers that every agent shares."""
 
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 import torch
 from torch import Tensor
@@ -90,32 +90,14 @@ class RandomPolicy:
         return self.space.sample(observation_batch_size(observation), generator=self.generator)
 
 
-@runtime_checkable
-class UniformActionSource(Protocol):
-    """An object that knows the uniform action of its augmentation method.
-
-    ``Environment`` does not declare this method in v1. An environment that exposes it gives
-    the fixed baseline the real recipe of the method, for example the Chronos recipe of
-    KernelSynth.
-    """
-
-    def uniform_action(self) -> Tensor:
-        """Return the uniform action, shape ``(a,)``."""
-        ...
-
-
 def uniform_action(env: Environment[Any]) -> Tensor:
     """Return the uniform action of the augmentation method of ``env``, shape ``(a,)``.
 
-    The environment contract has no ``uniform_action`` in v1. When ``env`` exposes one, this
-    function uses it. Otherwise it returns zeros clipped to the box: zeros are the uniform
-    action of KernelSynth (the Chronos recipe) and of the fake augmentation.
+    The function calls ``env.uniform_action()`` and clips the result to the action box. For
+    KernelSynth the uniform action is all zeros, the Chronos recipe.
     """
     space = env.action_space
-    if isinstance(env, UniformActionSource):
-        action = env.uniform_action().to(device=space.device, dtype=space.low.dtype)
-    else:
-        action = torch.zeros_like(space.low)
+    action = env.uniform_action().to(device=space.device, dtype=space.low.dtype)
     return space.clip(action.unsqueeze(0)).squeeze(0)
 
 

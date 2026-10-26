@@ -15,7 +15,13 @@ How the initial scores reach the featurizer: the contract keeps ``reset() -> Obs
 The environment then calls the featurizer with an :class:`EpochRecord` with ``epoch = 0``
 that holds the scores of the untrained tsmodels. A record with ``epoch = 0`` sets the scores
 only: it does not change the training statistics, the series count or the action history.
+
+State: the running normalization moments persist across episodes. ``state_dict`` returns
+them and ``load_state_dict`` restores them, so a saved policy sees the same normalized
+observations in a new process.
 """
+
+from collections.abc import Mapping
 
 import torch
 from jaxtyping import Float
@@ -41,6 +47,8 @@ REWARD_VECTOR = "reward_vector"
 ACTION_HISTORY = "action_history"
 TRAIN_FEATURES = ("loss", "loss_ema", "loss_slope", "grad_norm", "lr")
 """Columns of the ``train_stats`` group, in order."""
+MOMENT_KEYS = ("mean", "m2", "count")
+"""Keys of :meth:`RunningMoments.state_dict`."""
 
 
 class StatsFeaturizerConfig(FeaturizerConfig):
@@ -114,6 +122,59 @@ class RunningMoments:
             return batch
         return (batch - self._mean) / torch.sqrt(self.variance + self._epsilon)
 
+    def state_dict(self) -> dict[str, Tensor]:
+        """Return copies of the statistics, on the device.
+
+        Keys: ``mean`` ``(f,)``, ``m2`` ``(f,)``, the sum of the squared deviations from the
+        mean (the variance is ``m2 / count``), and ``count`` ``()``, int64.
+        """
+        return {
+            "mean": self._mean.clone(),
+            "m2": self._m2.clone(),
+            "count": torch.full((), self._count, dtype=torch.int64, device=self._mean.device),
+        }
+
+    @staticmethod
+    def check_state(state: Mapping[str, Tensor], n_features: int, *, prefix: str = "") -> None:
+        """Raise when ``state`` is not a state of moments with ``n_features`` features.
+
+        Args:
+            state: The tensors under the keys of :meth:`state_dict`.
+            n_features: Number of features, f.
+            prefix: Put before each key in the error messages.
+
+        Raises:
+            ValueError: If a key is missing, a tensor has the wrong shape or the count is
+                negative.
+        """
+        expected = {"mean": (n_features,), "m2": (n_features,), "count": ()}
+        missing = [f"{prefix}{name}" for name in expected if name not in state]
+        if missing:
+            msg = f"the state of the moments has no {missing}"
+            raise ValueError(msg)
+        for name, shape in expected.items():
+            actual = tuple(state[name].shape)
+            if actual != shape:
+                msg = f"{prefix}{name} has shape {actual}, expected {shape}"
+                raise ValueError(msg)
+        if int(state["count"]) < 0:
+            msg = f"{prefix}count is negative: {int(state['count'])}"
+            raise ValueError(msg)
+
+    def load_state_dict(self, state: Mapping[str, Tensor]) -> None:
+        """Restore the statistics that :meth:`state_dict` returned, on the device.
+
+        This method reads the count on the host. Call it outside the step.
+
+        Raises:
+            ValueError: If ``state`` does not match the shape of the statistics.
+        """
+        self.check_state(state, int(self._mean.shape[0]))
+        device = self._mean.device
+        self._mean = state["mean"].to(device=device, dtype=torch.float32).clone()
+        self._m2 = state["m2"].to(device=device, dtype=torch.float32).clone()
+        self._count = int(state["count"])
+
 
 class StatsFeaturizer(Featurizer[StatsFeaturizerConfig]):
     """Hand-made statistics of the training run, in four groups. See the module docstring.
@@ -182,6 +243,42 @@ class StatsFeaturizer(Featurizer[StatsFeaturizerConfig]):
     def moments(self) -> dict[str, RunningMoments]:
         """Return the running statistics of each group, used when ``normalize`` is true."""
         return self._moments
+
+    def state_dict(self) -> dict[str, Tensor]:
+        """Return the running moments of each group, the cross-episode state.
+
+        Keys are ``<group>/mean``, ``<group>/m2`` and ``<group>/count``, with the values of
+        :meth:`RunningMoments.state_dict`. The per-episode buffers are not part of the state.
+        """
+        return {
+            f"{group}/{name}": value
+            for group, moments in self._moments.items()
+            for name, value in moments.state_dict().items()
+        }
+
+    def load_state_dict(self, state: Mapping[str, Tensor]) -> None:
+        """Restore the running moments that :meth:`state_dict` returned, on the device.
+
+        The method checks every key and shape before it changes a value. It reads the counts on
+        the host, so call it outside the step.
+
+        Raises:
+            ValueError: If a key is missing or unknown, or if a tensor has the wrong shape.
+        """
+        expected = {f"{group}/{name}" for group in self._moments for name in MOMENT_KEYS}
+        missing, unknown = sorted(expected - set(state)), sorted(set(state) - expected)
+        if missing or unknown:
+            msg = f"wrong featurizer state: missing keys {missing}, unknown keys {unknown}"
+            raise ValueError(msg)
+        groups = {
+            group: {name: state[f"{group}/{name}"] for name in MOMENT_KEYS}
+            for group in self._moments
+        }
+        for group, values in groups.items():
+            n_features = self.observation_spec[group][0]
+            RunningMoments.check_state(values, n_features, prefix=f"{group}/")
+        for group, values in groups.items():
+            self._moments[group].load_state_dict(values)
 
     def _zeros(self, *features: int) -> Tensor:
         return torch.zeros((self._batch_envs, *features), device=self._device)

@@ -8,7 +8,13 @@ from autotsaugment.components.env.featurizers import (
     StatsFeaturizerConfig,
 )
 from autotsaugment.components.env.history import RecentValues
-from autotsaugment.core.featurizer import EpochRecord
+from autotsaugment.core.featurizer import (
+    EpochRecord,
+    Featurizer,
+    FeaturizerConfig,
+    Observation,
+    ObservationSpec,
+)
 
 K, D, A, E = 2, 3, 4, 10
 
@@ -166,6 +172,96 @@ def test_running_moments_match_the_batch_statistics(device: torch.device):
     torch.testing.assert_close(moments.variance, data.var(dim=0, correction=0))
     normalized = moments.normalize(data)
     torch.testing.assert_close(normalized.mean(dim=0), torch.zeros(5), atol=1e-5, rtol=0)
+
+
+def feed_an_episode(featurizer: StatsFeaturizer, *, offset: float = 0.0) -> None:
+    generator = torch.Generator().manual_seed(int(offset * 10))
+    featurizer.reset()
+    featurizer(record(0, scores=torch.rand(K, D, generator=generator) + 0.5))
+    for epoch in range(1, 4):
+        featurizer(
+            record(
+                epoch,
+                loss=torch.rand(K, generator=generator) + offset,
+                scores=torch.rand(K, D, generator=generator) + 0.5,
+                action=torch.rand(K, A, generator=generator) * 2.0 - 1.0,
+            )
+        )
+
+
+def test_state_round_trip_reproduces_the_observation(device: torch.device):
+    trained = make(device)
+    feed_an_episode(trained, offset=1.0)
+    feed_an_episode(trained, offset=2.0)
+    state = trained.state_dict()
+    assert set(state) == {
+        f"{group}/{name}" for group in trained.observation_spec for name in ("mean", "m2", "count")
+    }
+    assert state["progress/count"].item() == trained.moments["progress"].count
+    fresh, restored = make(device), make(device)
+    restored.load_state_dict(state)
+    probe = record(2, loss=3.0, scores=torch.full((K, D), 0.7), action=torch.ones(K, A))
+    observations = []
+    for featurizer in (trained, fresh, restored):
+        featurizer.reset()
+        featurizer(record(0, scores=torch.full((K, D), 0.9)))
+        observations.append(featurizer(probe))
+    from_trained, from_fresh, from_restored = observations
+    for name in trained.observation_spec:
+        torch.testing.assert_close(from_restored[name], from_trained[name])
+    assert not torch.allclose(from_fresh["train_stats"], from_trained["train_stats"])
+
+
+def test_state_is_a_copy(device: torch.device):
+    featurizer = make(device)
+    feed_an_episode(featurizer, offset=1.0)
+    state = featurizer.state_dict()
+    before = {key: value.clone() for key, value in state.items()}
+    feed_an_episode(featurizer, offset=2.0)
+    for key, value in state.items():
+        torch.testing.assert_close(value, before[key])
+
+
+def test_wrong_state_is_rejected(device: torch.device):
+    featurizer = make(device)
+    feed_an_episode(featurizer, offset=1.0)
+    state = featurizer.state_dict()
+    with pytest.raises(ValueError, match="missing keys \\['progress/mean'\\]"):
+        featurizer.load_state_dict({k: v for k, v in state.items() if k != "progress/mean"})
+    with pytest.raises(ValueError, match="unknown keys \\['extra'\\]"):
+        featurizer.load_state_dict({**state, "extra": torch.zeros(1)})
+    with pytest.raises(ValueError, match="action_history/mean has shape"):
+        featurizer.load_state_dict({**state, "action_history/mean": torch.zeros(A + 1)})
+    with pytest.raises(ValueError, match="count is negative"):
+        featurizer.load_state_dict({**state, "progress/count": torch.tensor(-1)})
+    other = make(device)
+    with pytest.raises(ValueError, match="shape"):
+        other.load_state_dict({**state, "reward_vector/m2": torch.zeros(1)})
+    assert other.moments["reward_vector"].count == 0
+
+
+class StatelessFeaturizer(Featurizer[FeaturizerConfig]):
+    """The smallest featurizer: the default state methods of the contract."""
+
+    config = FeaturizerConfig()
+
+    @property
+    def observation_spec(self) -> ObservationSpec:
+        return {"progress": (1,)}
+
+    def reset(self) -> Observation:
+        return {"progress": torch.zeros(K, 1)}
+
+    def __call__(self, record: EpochRecord) -> Observation:
+        return {"progress": torch.full((K, 1), record.epoch / record.epochs)}
+
+
+def test_the_default_featurizer_state_is_empty():
+    featurizer = StatelessFeaturizer()
+    assert featurizer.state_dict() == {}
+    featurizer.load_state_dict({})
+    with pytest.raises(ValueError, match="has no state"):
+        featurizer.load_state_dict({"progress/mean": torch.zeros(1)})
 
 
 def test_record_with_wrong_shapes_is_rejected(device: torch.device):

@@ -11,5 +11,7 @@ config:
   batch_size: 256
   replay_capacity: 100000
   warmup_steps: 200      # random actions before learning starts
-  updates_per_step: 1
+  # One env step costs seconds, one update costs milliseconds.
+  # 4 updates per step learned far faster on the fake bandit.
+  updates_per_step: 4
   target_entropy: auto

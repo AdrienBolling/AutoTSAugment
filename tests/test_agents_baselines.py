@@ -1,3 +1,4 @@
+import functools
 from pathlib import Path
 
 import pytest
@@ -6,7 +7,20 @@ import torch
 from autotsaugment.components.agents.fixed import FixedActionAgent, FixedActionAgentConfig
 from autotsaugment.components.agents.policies import uniform_action
 from autotsaugment.components.agents.random import RandomAgent, RandomAgentConfig
-from autotsaugment.components.fakes import FakeEnvironment, FakeEnvironmentConfig, MemoryTracker
+from autotsaugment.components.env.curriculum import CurriculumEnv, CurriculumEnvConfig
+from autotsaugment.components.env.featurizers import StatsFeaturizer, StatsFeaturizerConfig
+from autotsaugment.components.env.rewards import ImprovementReward, ImprovementRewardConfig
+from autotsaugment.components.fakes import (
+    FakeAugmentation,
+    FakeAugmentationConfig,
+    FakeBenchmark,
+    FakeBenchmarkConfig,
+    FakeEnvironment,
+    FakeEnvironmentConfig,
+    FakeTSModel,
+    FakeTSModelConfig,
+    MemoryTracker,
+)
 from autotsaugment.core.config import EpisodeConfig
 
 
@@ -16,7 +30,7 @@ def make_env(device: torch.device, *, batch_envs: int = 4, epochs: int = 8) -> F
 
 
 class UniformFakeEnvironment(FakeEnvironment):
-    """A fake environment that exposes the uniform action of its augmentation method."""
+    """A fake environment with a uniform action that is not zero."""
 
     def uniform_action(self) -> torch.Tensor:
         return torch.full((self.config.action_dim,), 0.5, device=self.device)
@@ -35,12 +49,52 @@ def test_fixed_agent_without_action_returns_zeros(device: torch.device):
     torch.testing.assert_close(action, torch.zeros(4, 3))
 
 
-def test_fixed_agent_uses_the_uniform_action_when_the_env_has_one(device: torch.device):
+def test_fixed_agent_uses_the_uniform_action_of_the_env(device: torch.device):
     env = UniformFakeEnvironment(config=make_env(device).config, device=device)
     torch.testing.assert_close(uniform_action(env), torch.full((3,), 0.5))
     agent = FixedActionAgent(config=FixedActionAgentConfig(), device=device)
     action = agent.fit(env, tracker=MemoryTracker(), seed=0)(env.reset(seed=0))
     torch.testing.assert_close(action, torch.full((4, 3), 0.5))
+
+
+def test_uniform_action_is_clipped_to_the_box(device: torch.device):
+    class OutsideFakeEnvironment(FakeEnvironment):
+        def uniform_action(self) -> torch.Tensor:
+            return torch.tensor([2.0, -3.0, 0.25], device=self.device)
+
+    env = OutsideFakeEnvironment(config=make_env(device).config, device=device)
+    torch.testing.assert_close(uniform_action(env), torch.tensor([1.0, -1.0, 0.25]))
+
+
+class OffsetAugmentation(FakeAugmentation):
+    """The fake augmentation with a uniform action that is not zero."""
+
+    UNIFORM = (0.1, 0.2, -0.3, 0.4)
+
+    def uniform_action(self) -> torch.Tensor:
+        return torch.tensor(self.UNIFORM, device=self.device)
+
+
+def test_fixed_agent_on_a_curriculum_env_uses_the_augmentation_uniform_action(
+    device: torch.device,
+):
+    episode = EpisodeConfig(epochs=2, series_per_epoch=8, batch_envs=2)
+    env = CurriculumEnv(
+        config=CurriculumEnvConfig(episode=episode, reward_subset_per_dataset=4),
+        device=device,
+        tsmodel=functools.partial(
+            FakeTSModel, config=FakeTSModelConfig(), device=device, episode_epochs=2
+        ),
+        augmentation=OffsetAugmentation(config=FakeAugmentationConfig(), device=device),
+        benchmark=FakeBenchmark(config=FakeBenchmarkConfig(), device=device),
+        featurizer=functools.partial(StatsFeaturizer, config=StatsFeaturizerConfig()),
+        reward=ImprovementReward(config=ImprovementRewardConfig()),
+    )
+    expected = torch.tensor(OffsetAugmentation.UNIFORM)
+    agent = FixedActionAgent(config=FixedActionAgentConfig(), device=device)
+    action = agent.fit(env, tracker=MemoryTracker(), seed=0)(env.reset(seed=0))
+    torch.testing.assert_close(action, expected.expand(2, 4))
+    torch.testing.assert_close(env.step(action).info["action"], expected.expand(2, 4))
 
 
 def test_fixed_agent_with_action_clips_and_round_trips(device: torch.device, tmp_path: Path):
