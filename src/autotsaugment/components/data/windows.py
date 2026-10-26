@@ -299,6 +299,7 @@ class SplitWindows:
         abs_sum: ``sum |y|`` per window, float32 ``(n,)``.
         series: Index of the window's series in the dataset, int64 ``(n,)``.
         horizon_start: First horizon step in series coordinates, int64 ``(n,)``.
+        quantile_levels: The levels of ``naive_loss_sum``.
     """
 
     context: Tensor
@@ -307,6 +308,7 @@ class SplitWindows:
     abs_sum: Tensor
     series: Tensor
     horizon_start: Tensor
+    quantile_levels: tuple[float, ...]
 
     @property
     def n_windows(self) -> int:
@@ -314,12 +316,14 @@ class SplitWindows:
         return int(self.context.shape[0])
 
     def as_dict(self) -> dict[str, Tensor]:
-        """Return the tensors by field name."""
+        """Return the tensors by field name. The quantile levels are not tensors: not here."""
         return {name: getattr(self, name) for name in WINDOW_FIELDS}
 
     @classmethod
-    def from_dict(cls, tensors: dict[str, Tensor]) -> "SplitWindows":
-        """Build from the output of :meth:`as_dict`."""
+    def from_dict(
+        cls, tensors: dict[str, Tensor], *, quantile_levels: tuple[float, ...]
+    ) -> "SplitWindows":
+        """Build from the output of :meth:`as_dict` and the quantile levels."""
         missing = set(WINDOW_FIELDS) - set(tensors)
         if missing:
             msg = f"missing window fields: {sorted(missing)}"
@@ -331,6 +335,7 @@ class SplitWindows:
             abs_sum=tensors["abs_sum"],
             series=tensors["series"],
             horizon_start=tensors["horizon_start"],
+            quantile_levels=quantile_levels,
         )
 
 
@@ -365,14 +370,15 @@ def _cut_split(
     windows: tuple[Tensor, Tensor],
     *,
     bounds: SplitBounds,
-    levels: Tensor,
+    levels: tuple[float, ...],
 ) -> SplitWindows:
     """Pad and score the selected windows of one split."""
     series, horizon_start = windows
     context, target = cut_windows(
         data.values, data.offsets[:-1][series], horizon_start, bounds.context_start[series], spec
     )
-    naive_loss_sum, abs_sum = naive_scores(context, target, levels, spec.season)
+    level_tensor = torch.tensor(levels, dtype=torch.float32)
+    naive_loss_sum, abs_sum = naive_scores(context, target, level_tensor, spec.season)
     return SplitWindows(
         context=context,
         target=target,
@@ -380,6 +386,7 @@ def _cut_split(
         abs_sum=abs_sum,
         series=series,
         horizon_start=horizon_start,
+        quantile_levels=levels,
     )
 
 
@@ -392,7 +399,7 @@ def build_dataset_windows(
     comparison_context_may_cross: bool,
     windows_per_split: Mapping[str, int],
     min_windows: int,
-    levels: Tensor,
+    levels: tuple[float, ...],
     seed: int,
 ) -> dict[str, SplitWindows]:
     """Build the reward and comparison windows of one dataset.
@@ -409,7 +416,7 @@ def build_dataset_windows(
         comparison_context_may_cross: Let comparison contexts read the reward split.
         windows_per_split: Maximum number of windows kept per split.
         min_windows: Minimum number of valid windows per split.
-        levels: Quantile levels of the naive pinball loss.
+        levels: Quantile levels of the naive pinball loss, stored in the result.
         seed: The root seed of the subsample.
 
     Returns:
@@ -458,7 +465,14 @@ def assemble_window_set(
 
     Returns:
         The window set; ``dataset_index`` follows the order of ``parts``.
+
+    Raises:
+        ValueError: If ``parts`` is empty, or if two parts hold different quantile levels.
     """
+    levels = {part.quantile_levels for part in parts}
+    if len(levels) != 1:
+        msg = f"the parts must hold the same quantile levels, got {sorted(levels)}"
+        raise ValueError(msg)
     counts = torch.tensor([part.n_windows for part in parts], dtype=torch.int64)
     window_set = WindowSet(
         context=torch.cat([part.context for part in parts]),
@@ -468,5 +482,6 @@ def assemble_window_set(
         abs_sum=torch.cat([part.abs_sum for part in parts]),
         dataset_names=dataset_names,
         domains=domains,
+        quantile_levels=levels.pop(),
     )
     return window_set.to(device)

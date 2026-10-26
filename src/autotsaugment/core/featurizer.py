@@ -1,6 +1,7 @@
 """Featurizer contract: turns the state of each lockstep environment into an observation."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from torch import Tensor
@@ -43,6 +44,11 @@ class Featurizer[ConfigT: FeaturizerConfig](ABC):
     """Builds the observation dict from the epoch records of an episode.
 
     Implementations take ``__init__(self, *, config, n_datasets, action_dim, batch_envs, device)``.
+
+    :meth:`state_dict` and :meth:`load_state_dict` carry the cross-episode state only, for
+    example the running normalization moments. The per-episode buffers are not part of the
+    state: :meth:`reset` clears them. A featurizer without cross-episode state keeps the
+    defaults: an empty state.
     """
 
     config: ConfigT
@@ -59,3 +65,23 @@ class Featurizer[ConfigT: FeaturizerConfig](ABC):
     @abstractmethod
     def __call__(self, record: EpochRecord) -> Observation:
         """Return the observation after ``record``, updating running statistics."""
+
+    def state_dict(self) -> dict[str, Tensor]:
+        """Return the cross-episode state, for a checkpoint. The default is empty.
+
+        The state holds what persists across episodes, for example normalization moments. It
+        does not hold the buffers of the current episode.
+        """
+        return {}
+
+    def load_state_dict(self, state: Mapping[str, Tensor]) -> None:
+        """Restore the state that :meth:`state_dict` returned, on the featurizer's device.
+
+        The default accepts only an empty state.
+
+        Raises:
+            ValueError: If ``state`` does not match the state of this featurizer.
+        """
+        if state:
+            msg = f"{type(self).__name__} has no state, got the keys {sorted(state)}"
+            raise ValueError(msg)

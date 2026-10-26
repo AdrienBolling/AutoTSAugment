@@ -5,7 +5,9 @@ config:
   _target_: autotsaugment.components.augmentation.kernelsynth.KernelSynthConfig
   series_length: 1024
   max_kernels: 5        # 1..5 kernels per series, drawn with replacement
-  logit_bound: 4.0      # action logits live in [-bound, bound]; zeros = Chronos recipe
-  jitter: 1.0e-4        # added to the Gram diagonal before Cholesky
+  # Action logits live in [-bound, bound]; zeros = Chronos recipe.
+  # 5.0 lets the action put a mass up to 0.9985 on one kernel; 4.0 gave 0.9894.
+  logit_bound: 5.0
+  jitter: 1.0e-4        # relative to the mean of the Gram diagonal; added before Cholesky
   max_jitter_retries: 3 # jitter x10 per retry on a failed factorization
   chunk_size: 256       # series factorized per batched Cholesky call

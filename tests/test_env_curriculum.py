@@ -21,7 +21,7 @@ from autotsaugment.components.fakes import (
 )
 from autotsaugment.core.config import EpisodeConfig
 from autotsaugment.core.environment import StepResult
-from autotsaugment.core.typechecking import ActionBatch, SeriesBatchK
+from autotsaugment.core.typechecking import ActionBatch, QuantileLevels, SeriesBatchK
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 EPOCHS, SERIES, K = 5, 64, 2
@@ -45,6 +45,8 @@ def make_env(
     *,
     subset: int | None = 16,
     reward_config: ImprovementRewardConfig | None = None,
+    tsmodel: type[FakeTSModel] = FakeTSModel,
+    tsmodel_config: FakeTSModelConfig | None = None,
 ) -> CurriculumEnv:
     config = CurriculumEnvConfig(
         episode=EpisodeConfig(epochs=EPOCHS, series_per_epoch=SERIES, batch_envs=K),
@@ -55,7 +57,10 @@ def make_env(
         config=config,
         device=device,
         tsmodel=functools.partial(
-            FakeTSModel, config=FakeTSModelConfig(), device=device, episode_epochs=EPOCHS
+            tsmodel,
+            config=tsmodel_config or FakeTSModelConfig(),
+            device=device,
+            episode_epochs=EPOCHS,
         ),
         augmentation=RecordingAugmentation(config=FakeAugmentationConfig(), device=device),
         benchmark=FakeBenchmark(config=FakeBenchmarkConfig(), device=device),
@@ -114,6 +119,14 @@ def test_every_output_has_the_documented_shape():
         assert result.info[f"train/{name}"].shape == (K,), name
     torch.testing.assert_close(result.info["train/series"], torch.full((K,), float(SERIES)))
     assert recorded(env)[0].shape == (K, SERIES, 64)
+
+
+def test_uniform_action_is_the_augmentation_uniform_action():
+    env = make_env()
+    action = env.uniform_action()
+    assert action.shape == (env.action_space.dim,)
+    assert action.device == env.device
+    torch.testing.assert_close(action, env._augmentation.uniform_action())
 
 
 def test_done_only_at_the_last_step():
@@ -200,6 +213,58 @@ def test_actions_are_clipped_and_checked():
         env.step(torch.zeros(K, 5))
     with pytest.raises(ValueError, match="shape"):
         env.step(torch.zeros(K + 1, 4))
+
+
+def test_state_round_trip_through_torch_save(tmp_path: Path):
+    trained = make_env()
+    for seed in (0, 1):
+        run_episode(trained, constant_action(0.3), seed=seed)
+    state = trained.state_dict()
+    assert state
+    assert all(key.startswith("featurizer/") for key in state)
+    path = tmp_path / "env_state.pt"
+    torch.save(state, path)
+    loaded = torch.load(path, map_location="cpu", weights_only=True)
+    restored, fresh = make_env(), make_env()
+    restored.load_state_dict(loaded)
+    observations = [env.reset(seed=5) for env in (trained, restored, fresh)]
+    from_trained, from_restored, from_fresh = observations
+    for name in trained.observation_spec:
+        torch.testing.assert_close(from_restored[name], from_trained[name])
+    assert not torch.allclose(from_fresh["reward_vector"], from_trained["reward_vector"])
+    action = constant_action(MATCHED)
+    first, second = trained.step(action), restored.step(action)
+    for name in trained.observation_spec:
+        torch.testing.assert_close(second.observation[name], first.observation[name])
+
+
+def test_wrong_state_keys_are_rejected():
+    env = make_env()
+    state = env.state_dict()
+    with pytest.raises(ValueError, match="prefix"):
+        env.load_state_dict({**state, "tsmodel/weights": torch.zeros(1)})
+    with pytest.raises(ValueError, match="unknown keys"):
+        env.load_state_dict({**state, "featurizer/extra": torch.zeros(1)})
+    with pytest.raises(ValueError, match="missing keys"):
+        env.load_state_dict({})
+
+
+class ShiftedLevelsTSModel(FakeTSModel):
+    """The fake tsmodel with the right number of levels at other values."""
+
+    @property
+    def quantile_levels(self) -> QuantileLevels:
+        return super().quantile_levels + 0.01
+
+
+def test_tsmodel_with_other_quantile_levels_is_rejected():
+    levels = list(FakeBenchmark(config=FakeBenchmarkConfig(), device="cpu").quantile_levels)
+    with pytest.raises(ValueError, match="tsmodel 0 forecasts the quantile levels") as error:
+        make_env(tsmodel_config=FakeTSModelConfig(n_levels=5))
+    assert "[0.05, 0.275, 0.5, 0.725, 0.95], but the reward windows" in str(error.value)
+    assert str(levels) in str(error.value)
+    with pytest.raises(ValueError, match="0.06, 0.1725"):
+        make_env(tsmodel=ShiftedLevelsTSModel)
 
 
 def test_components_on_another_device_are_rejected():

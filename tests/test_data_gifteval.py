@@ -22,6 +22,7 @@ from pydantic import ValidationError
 from autotsaugment.components.data import download as download_module
 from autotsaugment.components.data import gifteval as gifteval_module
 from autotsaugment.components.data.arrow import read_series
+from autotsaugment.components.data.cache import CACHE_VERSION, CacheFormatError, load_windows
 from autotsaugment.components.data.download import (
     BYTES_PER_GB,
     BudgetExceededError,
@@ -403,6 +404,26 @@ def test_cache_round_trip_reads_no_arrow(root: Path, monkeypatch: pytest.MonkeyP
         GiftEvalBenchmark(
             config=make_config(root, "covid_deaths/D", min_windows_per_split=4), device="cpu"
         )
+
+
+def test_cache_stores_the_quantile_levels(root: Path, monkeypatch: pytest.MonkeyPatch):
+    config = make_config(root, "ett1/H")
+    built = GiftEvalBenchmark(config=config, device="cpu")
+    assert built.reward_windows.quantile_levels == TIMESTRAL_QUANTILE_LEVELS
+    assert built.comparison_windows.quantile_levels == TIMESTRAL_QUANTILE_LEVELS
+    (path,) = (root / "cache").iterdir()
+    payload = torch.load(path, map_location="cpu", weights_only=True)
+    assert payload["version"] == CACHE_VERSION == 2
+    assert payload["quantile_levels"] == TIMESTRAL_QUANTILE_LEVELS
+    monkeypatch.setattr(gifteval_module, "read_series", fail)
+    cached = GiftEvalBenchmark(config=config, device="cpu")
+    assert cached.reward_windows.quantile_levels == TIMESTRAL_QUANTILE_LEVELS
+    torch.save({**payload, "version": 1}, path)
+    with pytest.raises(CacheFormatError, match="version 2"):
+        load_windows(path)
+    torch.save({key: value for key, value in payload.items() if key != "quantile_levels"}, path)
+    with pytest.raises(CacheFormatError, match="quantile levels None"):
+        load_windows(path)
 
 
 @pytest.mark.parametrize(

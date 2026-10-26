@@ -4,4 +4,4 @@ device: ${device}
 config:
   _target_: autotsaugment.components.agents.fixed.FixedActionAgentConfig
   episodes: 0
-  action: null   # null = env.action_space uniform action
+  action: null   # null = env.uniform_action(), the Chronos recipe for KernelSynth

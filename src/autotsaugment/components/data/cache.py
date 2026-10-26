@@ -3,8 +3,11 @@
 One file per dataset id: ``root/cache/<name>__<freq>__<sha1>.pt``. The SHA-1 hashes every
 field that changes the windows of that dataset (see
 ``GiftEvalBenchmarkConfig.cache_fields``) and :data:`CACHE_VERSION`. A change of any of them
-gives a new file name, so a stale file is never read. The file holds a dict of plain tensors
-and strings, written with ``torch.save`` and read with ``torch.load(weights_only=True)``.
+gives a new file name, so a stale file is never read. The file holds a dict of plain tensors,
+strings and floats, written with ``torch.save`` and read with ``torch.load(weights_only=True)``.
+
+Version 2 stores the quantile levels of the naive loss next to the windows, as a tuple of
+floats. Version 1 files have no levels; their names differ, so they are rebuilt.
 """
 
 import hashlib
@@ -18,7 +21,7 @@ import torch
 from autotsaugment.components.data.windows import SPLITS, SplitWindows
 
 CACHE_DIR: Final = "cache"
-CACHE_VERSION: Final = 1
+CACHE_VERSION: Final = 2
 FORMAT_ALLOWANCE_BYTES: Final = 64 * 1024  # torch.save adds about 6 kB to the tensor bytes
 
 
@@ -62,11 +65,19 @@ def save_windows(path: Path, dataset_id: str, windows: Mapping[str, SplitWindows
         path: The cache file.
         dataset_id: The id ``"<name>/<freq>"``, stored for inspection.
         windows: The windows of each split.
+
+    Raises:
+        ValueError: If the splits hold different quantile levels.
     """
+    levels = {windows[split].quantile_levels for split in SPLITS}
+    if len(levels) != 1:
+        msg = f"{dataset_id}: the splits hold different quantile levels {sorted(levels)}"
+        raise ValueError(msg)
     payload = {
         "version": CACHE_VERSION,
         "dataset_id": dataset_id,
         "splits": tuple(SPLITS),
+        "quantile_levels": tuple(float(level) for level in levels.pop()),
         **{split: windows[split].as_dict() for split in SPLITS},
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -82,17 +93,24 @@ def load_windows(path: Path) -> dict[str, SplitWindows]:
         path: The cache file.
 
     Returns:
-        The windows of each split, on the CPU.
+        The windows of each split, on the CPU, with the stored quantile levels.
 
     Raises:
-        CacheFormatError: The file does not hold a payload of :data:`CACHE_VERSION`.
+        CacheFormatError: The file does not hold a complete payload of :data:`CACHE_VERSION`.
     """
     payload = torch.load(path, map_location="cpu", weights_only=True)
     if not isinstance(payload, dict) or payload.get("version") != CACHE_VERSION:
         msg = f"{path} is not a window cache of version {CACHE_VERSION}; delete it to rebuild"
         raise CacheFormatError(msg)
+    levels = payload.get("quantile_levels")
+    if not isinstance(levels, tuple) or not all(isinstance(level, float) for level in levels):
+        msg = f"{path} holds the quantile levels {levels!r}, not a tuple of floats; delete it"
+        raise CacheFormatError(msg)
     try:
-        return {split: SplitWindows.from_dict(payload[split]) for split in SPLITS}
+        return {
+            split: SplitWindows.from_dict(payload[split], quantile_levels=levels)
+            for split in SPLITS
+        }
     except KeyError as error:
         msg = f"{path} is incomplete ({error}); delete it to rebuild"
         raise CacheFormatError(msg) from error
