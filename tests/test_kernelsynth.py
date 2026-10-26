@@ -137,7 +137,8 @@ def test_hydra_builds_the_method_from_the_config_file():
     node.config.series_length = LENGTH
     method = hydra.utils.instantiate(node)
     assert isinstance(method, KernelSynth)
-    assert method.config == KernelSynthConfig(series_length=LENGTH)
+    # The real-run YAML widens the action box: 5.0 instead of the code default 4.0.
+    assert method.config == KernelSynthConfig(series_length=LENGTH, logit_bound=5.0)
 
 
 def test_uniform_action_is_zero_and_inside_the_box():
