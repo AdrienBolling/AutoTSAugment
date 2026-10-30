@@ -83,7 +83,7 @@ src/autotsaugment/
     featurizer    Featurizer, EpochRecord, Observation
     reward        RewardFunction
     environment   Environment, StepResult, EnvironmentConfig
-    agent         Agent, Policy
+    agent         Agent, Policy, StatefulPolicy
     tracker       Tracker, to_host
     experiment    Experiment, write_metrics
   components/
@@ -94,6 +94,7 @@ src/autotsaugment/
     env/          WP4   curriculum, featurizers, rewards, scoring, history
     agents/       WP5   loop, policies, fixed, random, cmaes,
                         torchrl/{adapter,networks,sac,ppo}, gymnasium_adapter
+                  WP7   grpo, transformer, distributions
     tracking/     WP6   null, mlflow, prefixed
     experiments/  WP6   common, smoke, train_agent, compare
   cli             hydra entry point
@@ -178,12 +179,14 @@ small pull request first.
 | WP4 | env | #1 | 2026-10-26 | 83 |
 | WP5 | agents | #5 | 2026-10-26 | 97 |
 | WP6 | experiments, tracking | #7 | no | 330 |
+| WP7 | GRPO, transformer policy | #9 | no | 366 |
 
 Each branch count includes the tests of the bootstrap commit, so the counts overlap. Together
 on `main`, before the follow-up pull request, the CPU suite gives 275 passed. The follow-up
 pull request (`feat/core-followups`, #6) adds the contract methods of section 3.3, tunes the
 real-run configs and brings the count to 294. WP6 (#7) builds on #6 and adds 36 CPU tests:
-330 passed. The GPU suite (`-m gpu`) gives 9 passed.
+330 passed. The GPU suite (`-m gpu`) gives 9 passed. WP7 (#9) builds on #7 and adds 36 CPU tests
+(366 passed) and 1 GPU test (10 passed).
 
 ### WP1 — data (`feat/data`, #4)
 
@@ -462,6 +465,69 @@ Files: `components/tracking/{mlflow,prefixed}.py`,
   with `env.pt` and differ without it; a CLI subprocess run; every `_target_` imports. GPU:
   `log_step` without synchronization, `train_agent` and `compare` on CUDA.
 
+### WP7 — GRPO with a transformer memory policy (`feat/grpo`)
+
+Files: `components/agents/{grpo,transformer,distributions}.py`, `core/agent.py`
+(`StatefulPolicy`), `components/agents/loop.py` (the reset call), `configs/agent/grpo.yaml`,
+`tests/test_agents_{grpo,transformer}.py`.
+
+Why: in experiment 1, PPO learned slowly. Its critic learned a reward of about 0.01 per step, its
+MLP policy had no memory, and its entropy bonus held the 39-dimensional policy at the uniform
+distribution. WP7 replaces the critic with a group baseline, gives the policy the whole episode
+so far, and starts the policy at the fixed recipe.
+
+- D1, group and advantage. A group is every trajectory with the same episode seed: the K
+  lockstep environments times `group_episodes` (2) repeats, so G = 8 with K = 4. The group seed
+  is `episode_seed(seed, group_index)`. `advantage: step` standardizes the return to go
+  `G_t = sum_{s >= t} gamma^(s-t) r_s` (`gamma` 1) over the group at the same step t.
+  `advantage: outcome` standardizes the episode return and gives it to every step.
+  `normalize_std: false` keeps the mean baseline only. The standard deviation is the sample
+  standard deviation, plus `eps = 1e-6`. A group of one trajectory raises `ValueError` in `fit`.
+  The loss per token is the PPO clipped surrogate (`clip_epsilon` 0.2), the mean over the tokens
+  of the minibatch, with an optional k3 estimate of `KL(new || old)` (`kl_coef` 0) and an
+  optional entropy bonus (`entropy_coef` 0). There is no critic. Each update runs `epochs` (4)
+  passes over the trajectories of `groups_per_update` (1) groups. A minibatch holds whole
+  trajectories (`trajectories_per_minibatch`, null = all). AdamW, learning rate 3e-5, weight
+  decay 0.01 on the weight matrices, gradient-norm clip 1.0. A probe on the fake bandit with a
+  39-dimensional action gave a clip fraction of 0.02 to 0.30 at the last epoch with 3e-5,
+  against 0.42 to 0.80 with 1e-4. The tracker gets
+  `grpo/{loss_policy,kl_approx,clip_fraction,entropy,group_return_std,scale_mean}` at the last
+  step of each update.
+- D2, policy. The token of step t is `concat(o_t, s_{t-1})`, with the previous action scaled
+  to `[-1, 1]`: `s_{t-1} = (a_{t-1} - low) / (high - low) * 2 - 1`, and `s_{-1} = 0`. The
+  observation groups are normalized, so the raw action (`[-5, 5]` for KernelSynth) would
+  dominate the token. A linear embedding plus a learned position (a table of `max_steps = E`
+  rows, stored in the checkpoint; a longer episode raises `ValueError`), `n_layers` pre-norm
+  GELU encoder layers with a causal mask, a final layer norm, and two heads at every step:
+  `loc` (zero at initialization) and `scale = softplus(linear + b0) + min_scale` (`init_scale`
+  0.3 at initialization). So the initial mean action is the box center, the Chronos recipe.
+  The network has no dropout and stays in evaluation mode: the acting pass, the pass of the
+  behaviour log-probabilities and the gradient passes compute the same function, so the first
+  ratio is 1. Defaults `d_model` 256, 4 layers, 8 heads: 3.22 M parameters with d = 8 and a = 39.
+  `d_model` 512 with 8 layers gives 25.3 M. `distributions.py` holds the squashed Gaussian:
+  the log-probability uses the stable form of the tanh Jacobian and equals TorchRL's
+  `TanhNormal` to 1e-4. `HistoryPolicy` keeps the tokens of the episode, runs the network over
+  all of them at each step and acts with the last output. The acting path makes no host
+  synchronization (GPU test).
+- D3, core. `StatefulPolicy(Policy, Protocol)`, runtime checkable, adds `reset()`.
+  `run_episode` calls `policy.reset()` right after `env.reset`.
+- D4, agent. `fit` builds the network in a forked global stream seeded with
+  `derive_seed(seed, "grpo", "torch")`. The policy noise comes from `("grpo", "policy")` and the
+  minibatch order from `("grpo", "minibatch")`. The agent runs
+  `episodes // (groups_per_update * group_episodes)` updates and drops the remainder with a
+  warning. After each episode, the rollout keeps the tokens of the policy, the pre-squash samples
+  and the rewards. The behaviour log-probabilities come from one forward pass before the
+  epochs. The checkpoint holds the observation spec, `max_steps`, the network shape fields and
+  the network state. The returned policy is deterministic by default.
+- Tests: shapes, causality, the initial box center and scale, the log-probability against
+  `TanhNormal`, the reset of the policy memory, the group advantages, a smoke run with the
+  metric keys, reproducibility, the `save`/`load` round trip, better than random, and the
+  target learned on the fake bandit (the plain fake env, `gamma` 0: each reward depends on the
+  action of its own step only). `@pytest.mark.gpu`: `fit` on the real environment (2 epochs,
+  256 series), `save`/`load`, one `evaluate_policy`, in 23 s with the first compilation. It reads
+  the shards from `data/gifteval`, or from `AUTOTSAUGMENT_GIFTEVAL_ROOT` when it is set, and
+  skips when they are missing: it never downloads.
+
 ## 6. Order of work
 
 1. Wave 1, in parallel: WP1, WP2, WP3, WP4, WP5. Each starts from the bootstrap commit on
@@ -491,5 +557,8 @@ Files: `components/tracking/{mlflow,prefixed}.py`,
 - Symmetric quantile averaging and non-negative clipping in the comparison forecast, as
   `TimestralForecaster` does.
 - An own squashed Gaussian for SAC and PPO, so their updates make no host synchronization.
-  TorchRL's `TanhNormal` reads its bounds on the host.
+  TorchRL's `TanhNormal` reads its bounds on the host. WP7's `components/agents/distributions.py`
+  has the log-probability and the entropy.
 - Bitwise determinism on CUDA: `scatter_add` in `core.metrics` is not bitwise deterministic.
+- GRPO ablations that stay out of WP7: a GRU memory in place of the transformer, a reward token
+  in the policy input, and several groups per episode seed.

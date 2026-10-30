@@ -16,6 +16,7 @@ from autotsaugment.components.fakes import (
     FakeEnvironmentConfig,
     MemoryTracker,
 )
+from autotsaugment.core.agent import StatefulPolicy
 from autotsaugment.core.config import EpisodeConfig
 from autotsaugment.core.environment import StepResult
 from autotsaugment.core.featurizer import Observation
@@ -145,6 +146,35 @@ def test_run_episode_callback_sees_every_step_and_adds_metrics(device: torch.dev
     run_episode(env, TargetPolicy(), seed=0, tracker=tracker, on_step=on_step)
     assert seen == [(4, 4)] * 8
     assert all("extra" in metrics for _, metrics in tracker.steps)
+
+
+class CountingPolicy:
+    """A stateful policy: counts its resets and the steps since the last reset."""
+
+    def __init__(self) -> None:
+        self.resets = 0
+        self.steps_since_reset: list[int] = []
+        self._steps = 0
+
+    def reset(self) -> None:
+        self.resets += 1
+        self._steps = 0
+
+    def __call__(self, observation: Observation, *, deterministic: bool = True) -> torch.Tensor:
+        self._steps += 1
+        self.steps_since_reset.append(self._steps)
+        return observation["target"].clone()
+
+
+def test_run_episode_resets_a_stateful_policy_once_per_episode(device: torch.device):
+    env = make_env(device)
+    policy = CountingPolicy()
+    assert isinstance(policy, StatefulPolicy)
+    assert not isinstance(TargetPolicy(), StatefulPolicy)
+    for episode in range(3):
+        run_episode(env, policy, seed=episode, tracker=MemoryTracker())
+        assert policy.resets == episode + 1
+    assert policy.steps_since_reset == list(range(1, 9)) * 3
 
 
 def test_episode_seed_is_derived():

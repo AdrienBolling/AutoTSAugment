@@ -1,0 +1,25 @@
+# GRPO: group-relative advantages instead of a critic, and a causal transformer policy that
+# reads the whole episode so far, with the previous actions in its tokens.
+_target_: autotsaugment.components.agents.grpo.GRPOAgent
+device: ${device}
+config:
+  _target_: autotsaugment.components.agents.grpo.GRPOAgentConfig
+  episodes: 200                     # training episodes; updates = episodes // (groups_per_update * group_episodes)
+  group_episodes: 2                 # episodes with the same seed per group: G = group_episodes * K = 8
+  groups_per_update: 1              # groups collected before each update
+  advantage: step                   # step: return to go standardized per step; outcome: episode return
+  normalize_std: true               # divide by the group standard deviation; false keeps the mean baseline only
+  gamma: 1.0                        # discount of the return to go; 1 = total improvement of the rest of the episode
+  clip_epsilon: 0.2                 # clip range of the importance ratio
+  kl_coef: 0.0                      # weight of the k3 KL to the policy at the start of the update
+  entropy_coef: 0.0                 # entropy bonus; PPO showed it pins a 39-dimensional policy to uniform
+  epochs: 4                         # passes over the trajectories of an update
+  trajectories_per_minibatch: null  # whole trajectories per gradient step; null = all in one minibatch
+  learning_rate: 3e-5               # probe on the fake bandit: clip fraction 0.02 to 0.30 at the last epoch, against 0.42 to 0.80 at 1e-4
+  weight_decay: 0.01                # AdamW weight decay, on the weight matrices only
+  max_grad_norm: 1.0                # global gradient-norm clip per gradient step; null disables it
+  d_model: 256                      # transformer width (512 with n_layers 8 gives about 25 M parameters)
+  n_layers: 4                       # encoder layers; the defaults give about 3.2 M parameters
+  n_heads: 8                        # attention heads per layer; must divide d_model
+  init_scale: 0.3                   # scale of the pre-squash Gaussian at initialization
+  min_scale: 0.01                   # lower bound of the scale

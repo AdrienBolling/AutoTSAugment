@@ -22,6 +22,7 @@ any leaf on the command line, for example `agent.config.episodes=20`.
     uv run autotsaugment-run env=default device=cuda            # smoke on the real env, on the GPU
     uv run autotsaugment-run experiment=train_agent agent=sac   # train SAC, save it, evaluate it on 3 seeds
     uv run autotsaugment-run experiment=train_agent agent=cmaes # the CMA-ES control
+    uv run autotsaugment-run experiment=train_agent agent=grpo device=cuda  # GRPO, transformer policy with episode memory
     uv run autotsaugment-run experiment=compare                 # fixed uniform vs random, same seeds
 
 To compare trained agents, add their checkpoints to the policies. Use the commented examples in
@@ -45,7 +46,7 @@ is not valid: in Hydra, `null` removes the group.)
 | `metrics/` | `train_agent-<label>.json` and `compare.json`, the DVC metrics files | yes |
 | `models/` | The `.dvc` files of the keeper checkpoints | yes |
 
-`<label>` is the agent class in snake case: `sac`, `ppo`, `cmaes`, `fixed_action`, `random`.
+`<label>` is the agent class in snake case: `sac`, `ppo`, `grpo`, `cmaes`, `fixed_action`, `random`.
 Set another label with `experiment.label=<name>`.
 
 ### Metrics

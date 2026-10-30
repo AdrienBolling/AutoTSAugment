@@ -13,7 +13,7 @@ from typing import Any
 import torch
 from torch import Tensor
 
-from autotsaugment.core.agent import Policy
+from autotsaugment.core.agent import Policy, StatefulPolicy
 from autotsaugment.core.environment import Environment, StepResult
 from autotsaugment.core.featurizer import Observation
 from autotsaugment.core.seeding import derive_seed
@@ -130,7 +130,9 @@ def run_episode(
 
     The loop calls ``env.reset(seed=seed)``, then exactly ``env.episode_length`` steps (every
     episode has a fixed length, so the loop never reads ``done``), then ``env.evaluate()``. It
-    does not synchronize with the host. The tracker receives one ``log_step`` per step and one
+    does not synchronize with the host. When ``policy`` is a
+    :class:`~autotsaugment.core.agent.StatefulPolicy`, the loop calls ``policy.reset()`` once,
+    right after ``env.reset``, so the policy forgets the previous episode. The tracker receives one ``log_step`` per step and one
     ``log_episode`` at the end, which flushes the tracker once per episode.
 
     Args:
@@ -147,6 +149,8 @@ def run_episode(
         The returns, the final skill and the aggregate curve of the episode.
     """
     observation = env.reset(seed=seed)
+    if isinstance(policy, StatefulPolicy):
+        policy.reset()
     batch_size = env.batch_size
     returns = torch.zeros(batch_size, device=env.device)
     missing = torch.full((batch_size,), float("nan"), device=env.device)
