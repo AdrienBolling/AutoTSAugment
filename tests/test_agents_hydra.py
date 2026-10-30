@@ -21,7 +21,7 @@ def build(name: str) -> object:
 
 
 def test_every_agent_file_is_tested():
-    assert AGENTS == ["cmaes", "fixed_uniform", "ppo", "random", "sac"]
+    assert AGENTS == ["cmaes", "fixed_uniform", "grpo", "ppo", "random", "sac"]
 
 
 @pytest.mark.parametrize("name", AGENTS)
@@ -52,3 +52,14 @@ def test_hydra_values_reach_the_configs():
     cmaes = build("cmaes")
     assert isinstance(cmaes, Agent)
     assert cmaes.config.model_dump()["population"] is None
+
+
+def test_hydra_values_reach_the_grpo_config():
+    grpo = build("grpo")
+    assert isinstance(grpo, Agent)
+    values = grpo.config.model_dump()
+    assert values["advantage"] == "step"
+    assert values["trajectories_per_minibatch"] is None
+    assert values["learning_rate"] == pytest.approx(1e-4)
+    assert (values["d_model"], values["n_layers"], values["n_heads"]) == (256, 4, 8)
+    assert (values["group_episodes"], values["episodes"]) == (2, 200)

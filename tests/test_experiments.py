@@ -198,6 +198,7 @@ def test_experiment_leaves_are_validated(tmp_path: Path):
     [
         ("SACAgent", "sac"),
         ("PPOAgent", "ppo"),
+        ("GRPOAgent", "grpo"),
         ("CMAESAgent", "cmaes"),
         ("FixedActionAgent", "fixed_action"),
         ("RandomAgent", "random"),
