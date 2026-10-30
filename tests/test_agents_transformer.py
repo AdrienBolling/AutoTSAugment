@@ -32,7 +32,6 @@ def make_network(
         d_model=16,
         n_layers=2,
         n_heads=2,
-        dropout=0.0,
         init_scale=init_scale,
         min_scale=0.01,
         device=device,
@@ -71,6 +70,8 @@ def test_network_output_shapes(device: torch.device):
     assert loc.shape == (4, 5, ACTION_DIM)
     assert scale.shape == (4, 5, ACTION_DIM)
     assert loc.dtype == torch.float32
+    dropouts = [module for module in network.modules() if isinstance(module, nn.Dropout)]
+    assert all(module.p == 0.0 for module in dropouts)
     with pytest.raises(ValueError, match="at most 6"):
         network(torch.randn(1, 7, OBSERVATION_DIM + ACTION_DIM, device=device))
 
@@ -122,7 +123,6 @@ def test_large_network_shape_is_accepted(device: torch.device):
         d_model=512,
         n_layers=8,
         n_heads=8,
-        dropout=0.1,
         init_scale=0.3,
         min_scale=0.01,
         device="meta",
@@ -187,7 +187,9 @@ def test_policy_stores_the_tokens_and_the_previous_action(device: torch.device):
         torch.testing.assert_close(tokens[:, step, :OBSERVATION_DIM], flatten_observation(obs))
     torch.testing.assert_close(tokens[:, 0, OBSERVATION_DIM:], torch.zeros(3, ACTION_DIM))
     for step in range(1, 4):
-        torch.testing.assert_close(tokens[:, step, OBSERVATION_DIM:], actions[step - 1])
+        scaled = (actions[step - 1] - LOW) / (HIGH - LOW) * 2.0 - 1.0
+        torch.testing.assert_close(tokens[:, step, OBSERVATION_DIM:], scaled)
+        assert tokens[:, step, OBSERVATION_DIM:].abs().max() <= 1.0
 
 
 def test_deterministic_actions_equal_the_network_over_the_episode(device: torch.device):
@@ -224,6 +226,12 @@ def test_reset_empties_the_memory(device: torch.device):
     policy(observation(device, seed=2))
     with pytest.raises(ValueError, match="call reset"):
         policy(observation(device, seed=3))
+
+
+def test_policy_needs_a_box_with_width(device: torch.device):
+    space = BoxSpace(low=torch.zeros(2), high=torch.tensor([1.0, 0.0]), names=("x", "y"))
+    with pytest.raises(ValueError, match="high > low"):
+        HistoryPolicy(make_network(device), space, make_generator(device, 0))
 
 
 def test_policy_rejects_a_new_batch_size_inside_an_episode(device: torch.device):

@@ -1,12 +1,19 @@
 """A causal transformer policy that reads the whole episode so far.
 
-The token of step t is ``concat(o_t, a_{t-1})``: the flat observation of step t (entries in
+The token of step t is ``concat(o_t, s_{t-1})``: the flat observation of step t (entries in
 sorted key order, see :func:`~autotsaugment.components.agents.torchrl.networks.flatten_observation`)
-and the action of the previous step, zeros at t = 0. The previous actions are the memory of the
-synthetic data that the policy already created in the episode. :class:`HistoryNetwork` maps the
-tokens of an episode to the location and scale of a squashed Gaussian at every step, and attends
-only to the steps up to the current one. :class:`HistoryPolicy` keeps the tokens of the current
-episode and acts with the output at the last step.
+and the action of the previous step, scaled to ``[-1, 1]``:
+
+    s_{t-1} = (a_{t-1} - low) / (high - low) * 2 - 1
+
+with ``s_{-1} = 0`` (the box center) at t = 0. The observation groups are normalized, so the scale
+keeps the raw action (``[-5, 5]`` for KernelSynth) from dominating the token. The previous actions
+are the memory of the synthetic data that the policy already created in the episode.
+:class:`HistoryNetwork` maps the tokens of an episode to the location and scale of a squashed
+Gaussian at every step, and attends only to the steps up to the current one. The network has no
+dropout, so the acting pass and the training pass compute the same function.
+:class:`HistoryPolicy` keeps the tokens of the current episode and acts with the output at the
+last step.
 
 At initialization the location head is zero and the scale is ``init_scale`` everywhere. The mean
 action is then the center of the box: for KernelSynth, all logits 0, the uniform recipe.
@@ -35,19 +42,19 @@ class HistoryNetwork(nn.Module):
     """A causal transformer encoder from episode tokens to a squashed Gaussian per step.
 
     ``embed(token) + position(t)``, then ``n_layers`` pre-norm encoder layers with a causal
-    mask, a final layer norm, and two linear heads at every step: ``loc`` and
+    mask and no dropout, a final layer norm, and two linear heads at every step: ``loc`` and
     ``scale = softplus(linear + b0) + min_scale`` with ``b0 = log(exp(init_scale - min_scale) - 1)``.
     Both heads start at zero, so the initial location is 0 and the initial scale is
     ``init_scale``.
 
     Args:
-        token_dim: Length of one token, the flat observation plus the action, ``D_obs + a``.
+        token_dim: Length of one token, the flat observation plus the scaled previous action,
+            ``D_obs + a``.
         action_dim: Action dimensions, a.
         max_steps: Length of the positional table, the longest episode the network accepts.
         d_model: Width of the residual stream.
         n_layers: Encoder layers.
         n_heads: Attention heads per layer. ``d_model`` must be a multiple of it.
-        dropout: Dropout rate of the encoder layers.
         init_scale: Scale of the Gaussian at initialization.
         min_scale: Lower bound of the scale, below ``init_scale``.
         device: Device of the parameters.
@@ -65,7 +72,6 @@ class HistoryNetwork(nn.Module):
         d_model: int,
         n_layers: int,
         n_heads: int,
-        dropout: float,
         init_scale: float,
         min_scale: float,
         device: torch.device | str,
@@ -83,7 +89,7 @@ class HistoryNetwork(nn.Module):
             d_model,
             n_heads,
             dim_feedforward=4 * d_model,
-            dropout=dropout,
+            dropout=0.0,
             activation="gelu",
             batch_first=True,
             norm_first=True,
@@ -149,19 +155,23 @@ class HistoryPolicy:
     tokens of the episode and acts with the output at the last step. Deterministic calls return
     the squashed location. Stochastic calls draw the pre-squash value ``u`` from the policy's
     generator, store it in :attr:`last_sample` and return its squashed value. The action is
-    clipped to the box in both cases and becomes the previous action of the next token. The
-    calls make no host synchronization.
+    clipped to the box in both cases. Scaled to ``[-1, 1]``, it goes into the token of the next
+    step. The calls make no host synchronization.
 
     :meth:`reset` empties the memory. The episode loop calls it after each ``env.reset``.
 
     Args:
-        network: The network. The policy puts it in evaluation mode for each call.
-        space: The action box, on the device of the network.
+        network: The network.
+        space: The action box, on the device of the network. Every dimension needs a positive
+            width.
         generator: Generator of the exploration noise, on the same device.
 
     Attributes:
         last_sample: The pre-squash value of the last call, shape ``(k, a)``: the sample of a
             stochastic call, the location of a deterministic call. ``None`` after a reset.
+
+    Raises:
+        ValueError: If a dimension of the box has no width.
     """
 
     last_sample: Tensor | None
@@ -169,12 +179,17 @@ class HistoryPolicy:
     def __init__(
         self, network: HistoryNetwork, space: BoxSpace, generator: torch.Generator
     ) -> None:
+        width = space.high - space.low
+        if not bool((width > 0).all()):
+            msg = "every dimension of the action box needs high > low to scale the action"
+            raise ValueError(msg)
         self.network = network
         self.space = space
         self.generator = generator
         self.last_sample = None
+        self._width = width
         self._tokens: list[Tensor] = []
-        self._previous_action: Tensor | None = None
+        self._previous: Tensor | None = None
 
     @property
     def steps(self) -> int:
@@ -184,11 +199,13 @@ class HistoryPolicy:
     def reset(self) -> None:
         """Forget the current episode: no token, no previous action, no last sample."""
         self._tokens = []
-        self._previous_action = None
+        self._previous = None
         self.last_sample = None
 
     def tokens(self) -> Tensor:
-        """Return the tokens of the episode so far, shape ``(k, t, D_tok)``.
+        """Return the tokens of the episode so far, exactly what the network read.
+
+        Shape ``(k, t, D_tok)``. The last ``a`` entries of a token are the scaled previous action.
 
         Raises:
             RuntimeError: If the memory is empty.
@@ -218,16 +235,15 @@ class HistoryPolicy:
                 f"the episode has {self._tokens[0].shape[0]} rows, the observation {flat.shape[0]}"
             )
             raise ValueError(msg)
-        previous = self._previous_action
+        previous = self._previous
         if previous is None:
             previous = flat.new_zeros((flat.shape[0], self.space.dim))
         self._tokens.append(torch.cat([flat, previous], dim=-1))
-        self.network.eval()
         with torch.no_grad():
             loc, scale = self.network(self.tokens())
         loc, scale = loc[:, -1], scale[:, -1]
         sample = loc if deterministic else sample_pre_squash(loc, scale, self.generator)
         action = self.space.clip(squash(sample, self.space.low, self.space.high))
         self.last_sample = sample
-        self._previous_action = action
+        self._previous = (action - self.space.low) / self._width * 2.0 - 1.0
         return action

@@ -60,6 +60,7 @@ def test_hydra_values_reach_the_grpo_config():
     values = grpo.config.model_dump()
     assert values["advantage"] == "step"
     assert values["trajectories_per_minibatch"] is None
-    assert values["learning_rate"] == pytest.approx(1e-4)
+    assert values["learning_rate"] == pytest.approx(3e-5)
+    assert "dropout" not in values
     assert (values["d_model"], values["n_layers"], values["n_heads"]) == (256, 4, 8)
     assert (values["group_episodes"], values["episodes"]) == (2, 200)

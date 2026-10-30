@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 ADVANTAGE_EPS = 1e-6
 """Added to the group standard deviation before the division."""
 
-NETWORK_FIELDS = ("d_model", "n_layers", "n_heads", "dropout", "init_scale", "min_scale")
+NETWORK_FIELDS = ("d_model", "n_layers", "n_heads", "init_scale", "min_scale")
 """The config fields that shape the network. The checkpoint stores them."""
 
 MIN_GROUP_SIZE = 2
@@ -83,13 +83,14 @@ class GRPOAgentConfig(AgentConfig):
         epochs: Passes over the trajectories of an update.
         trajectories_per_minibatch: Whole trajectories per gradient step. ``None`` puts all the
             trajectories of the update in one minibatch.
-        learning_rate: AdamW learning rate.
+        learning_rate: AdamW learning rate. A probe on the fake bandit with a 39-dimensional
+            action gave a clip fraction of 0.02 to 0.30 at the last epoch with 3e-5, against
+            0.42 to 0.80 with 1e-4.
         weight_decay: AdamW weight decay, on the weight matrices only.
         max_grad_norm: Global gradient-norm clip per gradient step, or ``None``.
         d_model: Width of the transformer.
         n_layers: Encoder layers.
         n_heads: Attention heads per layer.
-        dropout: Dropout rate of the encoder layers.
         init_scale: Scale of the pre-squash Gaussian at initialization.
         min_scale: Lower bound of the scale.
     """
@@ -105,13 +106,12 @@ class GRPOAgentConfig(AgentConfig):
     entropy_coef: float = Field(default=0.0, ge=0.0)
     epochs: int = Field(default=4, ge=1)
     trajectories_per_minibatch: int | None = Field(default=None, ge=1)
-    learning_rate: float = Field(default=1e-4, gt=0.0)
+    learning_rate: float = Field(default=3e-5, gt=0.0)
     weight_decay: float = Field(default=0.01, ge=0.0)
     max_grad_norm: float | None = Field(default=1.0, gt=0.0)
     d_model: int = Field(default=256, ge=1)
     n_layers: int = Field(default=4, ge=1)
     n_heads: int = Field(default=8, ge=1)
-    dropout: float = Field(default=0.0, ge=0.0, lt=1.0)
     init_scale: float = Field(default=0.3, gt=0.0)
     min_scale: float = Field(default=0.01, ge=0.0)
 
@@ -278,11 +278,9 @@ class _GRPOLearner:
             normalize_std=config.normalize_std,
         )
         _, return_std = group_moments(batch.rewards.sum(dim=1), batch.group, n_groups)
-        self.network.eval()
         with torch.no_grad():
             loc, scale = self.network(batch.tokens)
             old_log_prob = log_prob(batch.samples, loc, scale, self.space.low, self.space.high)
-        self.network.train()
         n = batch.tokens.shape[0]
         size = config.trajectories_per_minibatch or n
         metrics: dict[str, Tensor] = {}
@@ -293,7 +291,6 @@ class _GRPOLearner:
                 metrics = self._step(
                     batch.tokens[rows], batch.samples[rows], old_log_prob[rows], advantages[rows]
                 )
-        self.network.eval()
         metrics["grpo/group_return_std"] = return_std.mean()
         return metrics
 
@@ -362,7 +359,11 @@ class GRPOAgent(Agent[GRPOAgentConfig]):
         shape: dict[str, Any],
         seed: int,
     ) -> HistoryPolicy:
-        """Create the network and the policy for the spaces of the environment."""
+        """Create the network and the policy for the spaces of the environment.
+
+        The network stays in evaluation mode. It has no dropout, so the acting pass, the pass
+        of the behaviour log-probabilities and the gradient passes compute the same function.
+        """
         network = HistoryNetwork(
             token_dim=observation_dim(observation_spec) + space.dim,
             action_dim=space.dim,

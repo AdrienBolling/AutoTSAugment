@@ -222,6 +222,19 @@ def test_grpo_minibatches_of_whole_trajectories(device: torch.device):
     assert all(set(metrics) == METRIC_KEYS for metrics in updates)
 
 
+def test_first_gradient_step_has_a_ratio_of_one(device: torch.device):
+    # The gradient pass and the pass of the old log-probabilities compute the same function
+    # (no dropout), so the first ratio is 1: no clipping and no KL.
+    env = make_env(device)
+    tracker = MemoryTracker()
+    GRPOAgent(config=small_grpo(epochs=1), device=device).fit(env, tracker=tracker, seed=0)
+    updates = [metrics for _, metrics in tracker.steps if "grpo/loss_policy" in metrics]
+    assert len(updates) == 2
+    for metrics in updates:
+        assert metrics["grpo/clip_fraction"] == 0.0
+        assert metrics["grpo/kl_approx"] == pytest.approx(0.0, abs=1e-6)
+
+
 def test_grpo_policy_is_deterministic_by_default(device: torch.device):
     env = make_env(device)
     policy = GRPOAgent(config=small_grpo(), device=device).fit(env, tracker=NullTracker(), seed=0)

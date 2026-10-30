@@ -15,12 +15,11 @@ config:
   entropy_coef: 0.0                 # entropy bonus; PPO showed it pins a 39-dimensional policy to uniform
   epochs: 4                         # passes over the trajectories of an update
   trajectories_per_minibatch: null  # whole trajectories per gradient step; null = all in one minibatch
-  learning_rate: 1e-4               # AdamW learning rate
+  learning_rate: 3e-5               # probe on the fake bandit: clip fraction 0.02 to 0.30 at the last epoch, against 0.42 to 0.80 at 1e-4
   weight_decay: 0.01                # AdamW weight decay, on the weight matrices only
   max_grad_norm: 1.0                # global gradient-norm clip per gradient step; null disables it
   d_model: 256                      # transformer width (512 with n_layers 8 gives about 25 M parameters)
   n_layers: 4                       # encoder layers; the defaults give about 3.2 M parameters
   n_heads: 8                        # attention heads per layer; must divide d_model
-  dropout: 0.0                      # dropout rate of the encoder layers
   init_scale: 0.3                   # scale of the pre-squash Gaussian at initialization
   min_scale: 0.01                   # lower bound of the scale

@@ -179,14 +179,14 @@ small pull request first.
 | WP4 | env | #1 | 2026-10-26 | 83 |
 | WP5 | agents | #5 | 2026-10-26 | 97 |
 | WP6 | experiments, tracking | #7 | no | 330 |
-| WP7 | GRPO, transformer policy | #9 | no | 364 |
+| WP7 | GRPO, transformer policy | #9 | no | 366 |
 
 Each branch count includes the tests of the bootstrap commit, so the counts overlap. Together
 on `main`, before the follow-up pull request, the CPU suite gives 275 passed. The follow-up
 pull request (`feat/core-followups`, #6) adds the contract methods of section 3.3, tunes the
 real-run configs and brings the count to 294. WP6 (#7) builds on #6 and adds 36 CPU tests:
-330 passed. The GPU suite (`-m gpu`) gives 9 passed. WP7 (#9) builds on #7 and adds 34 CPU tests
-(364 passed) and 1 GPU test (10 passed).
+330 passed. The GPU suite (`-m gpu`) gives 9 passed. WP7 (#9) builds on #7 and adds 36 CPU tests
+(366 passed) and 1 GPU test (10 passed).
 
 ### WP1 — data (`feat/data`, #4)
 
@@ -487,17 +487,23 @@ so far, and starts the policy at the fixed recipe.
   of the minibatch, with an optional k3 estimate of `KL(new || old)` (`kl_coef` 0) and an
   optional entropy bonus (`entropy_coef` 0). There is no critic. Each update runs `epochs` (4)
   passes over the trajectories of `groups_per_update` (1) groups. A minibatch holds whole
-  trajectories (`trajectories_per_minibatch`, null = all). AdamW, learning rate 1e-4, weight
-  decay 0.01 on the weight matrices, gradient-norm clip 1.0. The tracker gets
+  trajectories (`trajectories_per_minibatch`, null = all). AdamW, learning rate 3e-5, weight
+  decay 0.01 on the weight matrices, gradient-norm clip 1.0. A probe on the fake bandit with a
+  39-dimensional action gave a clip fraction of 0.02 to 0.30 at the last epoch with 3e-5,
+  against 0.42 to 0.80 with 1e-4. The tracker gets
   `grpo/{loss_policy,kl_approx,clip_fraction,entropy,group_return_std,scale_mean}` at the last
   step of each update.
-- D2, policy. The token of step t is `concat(o_t, a_{t-1})`, with `a_{-1} = 0`. A linear
-  embedding plus a learned position (a table of `max_steps = E` rows, stored in the
-  checkpoint; a longer episode raises `ValueError`), `n_layers` pre-norm GELU encoder layers
-  with a causal mask, a final layer norm, and two heads at every step: `loc` (zero at
-  initialization) and `scale = softplus(linear + b0) + min_scale` (`init_scale` 0.3 at
-  initialization). So the initial mean action is the box center, the Chronos recipe. Defaults
-  `d_model` 256, 4 layers, 8 heads, dropout 0: 3.22 M parameters with d = 8 and a = 39.
+- D2, policy. The token of step t is `concat(o_t, s_{t-1})`, with the previous action scaled
+  to `[-1, 1]`: `s_{t-1} = (a_{t-1} - low) / (high - low) * 2 - 1`, and `s_{-1} = 0`. The
+  observation groups are normalized, so the raw action (`[-5, 5]` for KernelSynth) would
+  dominate the token. A linear embedding plus a learned position (a table of `max_steps = E`
+  rows, stored in the checkpoint; a longer episode raises `ValueError`), `n_layers` pre-norm
+  GELU encoder layers with a causal mask, a final layer norm, and two heads at every step:
+  `loc` (zero at initialization) and `scale = softplus(linear + b0) + min_scale` (`init_scale`
+  0.3 at initialization). So the initial mean action is the box center, the Chronos recipe.
+  The network has no dropout and stays in evaluation mode: the acting pass, the pass of the
+  behaviour log-probabilities and the gradient passes compute the same function, so the first
+  ratio is 1. Defaults `d_model` 256, 4 layers, 8 heads: 3.22 M parameters with d = 8 and a = 39.
   `d_model` 512 with 8 layers gives 25.3 M. `distributions.py` holds the squashed Gaussian:
   the log-probability uses the stable form of the tanh Jacobian and equals TorchRL's
   `TanhNormal` to 1e-4. `HistoryPolicy` keeps the tokens of the episode, runs the network over
